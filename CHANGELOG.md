@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.2] - 2026-01-28
+
+### Added
+- 新增用户级路由配置功能
+  - 同端口不同用户可配置不同出站路由（直连/WARP/链式代理/负载均衡）
+  - 用户级路由优先于全局分流规则
+  - 添加用户时可选择专属路由
+  - 用户管理菜单新增「修改用户路由 (r)」选项
+  - 用户列表显示路由配置列
+- 新增 XHTTP TLS+CDN 模式
+  - 安装 VLESS-XHTTP 时可选择 Reality 模式或 TLS+CDN 模式
+  - TLS+CDN 模式使用真实证书，支持通过 Cloudflare CDN（小云朵）代理
+  - 自动配置 Nginx 反代 XHTTP (gRPC/h2c) 协议
+  - 适合 IP 被墙场景，CDN 保护入站连接
+- 新增 VLESS-WS 无 TLS 模式（VLESS-WS-CF）
+  - 专为 Cloudflare Tunnel 场景设计
+  - 服务器端不需要 TLS，由 CF Tunnel 提供加密
+  - Cloudflare Tunnel 快速隧道/命名隧道支持检测
+  - 隧道状态页面显示分享链接和二维码
+
+### Fixed
+- 修复端口输入循环无法退出的问题（添加 0/q 退出选项）
+- 修复 alpine 系统无法查询流量统计问题
+- 修复 tgbot 循环发送消息问题 
+- 修复 Xray 日志目录不存在导致服务启动失败的问题
+
 ## [3.4.1] - 2026-01-27
 
 ### Added

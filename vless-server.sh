@@ -1,6 +1,6 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-#  多协议代理一键部署脚本 v3.4.1 [服务端]
+#  多协议代理一键部署脚本 v3.4.2 [服务端]
 #  
 #  架构升级:
 #    • Xray 核心: 处理 TCP/TLS 协议 (VLESS/VMess/Trojan/SOCKS/SS2022)
@@ -17,7 +17,7 @@
 #  项目地址: https://github.com/Chil30/vless-all-in-one
 #═══════════════════════════════════════════════════════════════════════════════
 
-readonly VERSION="3.4.1"
+readonly VERSION="3.4.2"
 readonly AUTHOR="Chil30"
 readonly REPO_URL="https://github.com/Chil30/vless-all-in-one"
 readonly SCRIPT_REPO="Chil30/vless-all-in-one"
@@ -429,7 +429,9 @@ get_protocol_name() {
         vless) echo "VLESS-REALITY" ;;
         vless-vision) echo "VLESS-Vision" ;;
         vless-ws) echo "VLESS-WS" ;;
+        vless-ws-notls) echo "VLESS-WS-CF" ;;
         vless-xhttp) echo "VLESS-XHTTP" ;;
+        vless-xhttp-cdn) echo "VLESS-XHTTP-CDN" ;;
         vmess) echo "VMess-WS" ;;
         vmess-xhttp) echo "VMess-XHTTP" ;;
         tuic) echo "TUIC" ;;
@@ -458,22 +460,41 @@ gen_xray_vless_clients() {
     
     local users=$(db_get_users_stats "xray" "$proto")
     if [[ -z "$users" ]]; then
-        local uuid=$(db_get_field "xray" "$proto" "uuid")
-        if [[ -n "$uuid" ]]; then
-            if [[ -n "$flow" ]]; then
-                echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\",\"flow\":\"$flow\"}]"
+        # 尝试从配置中获取默认 UUID（支持多端口数组）
+        local config=$(db_get "xray" "$proto")
+        if [[ -n "$config" && "$config" != "null" ]]; then
+            # 检查是否为数组
+            if echo "$config" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                # 多端口：从第一个端口获取 uuid
+                local uuid=$(echo "$config" | jq -r '.[0].uuid // empty')
+                if [[ -n "$uuid" ]]; then
+                    if [[ -n "$flow" ]]; then
+                        echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\",\"flow\":\"$flow\"}]"
+                    else
+                        echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\"}]"
+                    fi
+                    return
+                fi
             else
-                echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\"}]"
+                # 单端口
+                local uuid=$(echo "$config" | jq -r '.uuid // empty')
+                if [[ -n "$uuid" ]]; then
+                    if [[ -n "$flow" ]]; then
+                        echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\",\"flow\":\"$flow\"}]"
+                    else
+                        echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\"}]"
+                    fi
+                    return
+                fi
             fi
-        else
-            echo "[]"
         fi
+        echo "[]"
         return
     fi
     
     local clients="[]"
-    while IFS='|' read -r name uuid used quota enabled port; do
-        [[ -z "$name" || "$enabled" != "true" ]] && continue
+    while IFS='|' read -r name uuid used quota enabled port routing; do
+        [[ -z "$name" || -z "$uuid" || "$enabled" != "true" ]] && continue
         local email="${name}@${proto}"
         
         if [[ -n "$flow" ]]; then
@@ -492,18 +513,26 @@ gen_xray_vmess_clients() {
     
     local users=$(db_get_users_stats "xray" "$proto")
     if [[ -z "$users" ]]; then
-        local uuid=$(db_get_field "xray" "$proto" "uuid")
-        if [[ -n "$uuid" ]]; then
-            echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\",\"alterId\":0}]"
-        else
-            echo "[]"
+        # 尝试从配置中获取默认 UUID（支持多端口数组）
+        local config=$(db_get "xray" "$proto")
+        if [[ -n "$config" && "$config" != "null" ]]; then
+            if echo "$config" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                local uuid=$(echo "$config" | jq -r '.[0].uuid // empty')
+            else
+                local uuid=$(echo "$config" | jq -r '.uuid // empty')
+            fi
+            if [[ -n "$uuid" ]]; then
+                echo "[{\"id\":\"$uuid\",\"email\":\"default@${proto}\",\"alterId\":0}]"
+                return
+            fi
         fi
+        echo "[]"
         return
     fi
     
     local clients="[]"
-    while IFS='|' read -r name uuid used quota enabled port; do
-        [[ -z "$name" || "$enabled" != "true" ]] && continue
+    while IFS='|' read -r name uuid used quota enabled port routing; do
+        [[ -z "$name" || -z "$uuid" || "$enabled" != "true" ]] && continue
         local email="${name}@${proto}"
         clients=$(echo "$clients" | jq --arg id "$uuid" --arg e "$email" '. + [{id: $id, email: $e, alterId: 0}]')
     done <<< "$users"
@@ -517,19 +546,28 @@ gen_xray_trojan_clients() {
     
     local users=$(db_get_users_stats "xray" "$proto")
     if [[ -z "$users" ]]; then
-        local password=$(db_get_field "xray" "$proto" "password")
-        if [[ -n "$password" ]]; then
-            echo "[{\"password\":\"$password\"}]"
-        else
-            echo "[]"
+        # 尝试从配置中获取默认 password（支持多端口数组）
+        local config=$(db_get "xray" "$proto")
+        if [[ -n "$config" && "$config" != "null" ]]; then
+            if echo "$config" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                local password=$(echo "$config" | jq -r '.[0].password // empty')
+            else
+                local password=$(echo "$config" | jq -r '.password // empty')
+            fi
+            if [[ -n "$password" ]]; then
+                echo "[{\"password\":\"$password\",\"email\":\"default@${proto}\"}]"
+                return
+            fi
         fi
+        echo "[]"
         return
     fi
     
     local clients="[]"
-    while IFS='|' read -r name uuid used quota enabled port; do
-        [[ -z "$name" || "$enabled" != "true" ]] && continue
+    while IFS='|' read -r name uuid used quota enabled port routing; do
+        [[ -z "$name" || -z "$uuid" || "$enabled" != "true" ]] && continue
         local email="${name}@${proto}"
+        # Trojan 使用 password 字段，这里 uuid 实际存储的是 password
         clients=$(echo "$clients" | jq --arg pw "$uuid" --arg e "$email" '. + [{password: $pw, email: $e}]')
     done <<< "$users"
     
@@ -542,14 +580,16 @@ gen_xray_ss2022_clients() {
     
     local users=$(db_get_users_stats "xray" "$proto")
     if [[ -z "$users" ]]; then
+        # SS2022 多用户模式必须有 users 数组，返回空
         echo "[]"
         return
     fi
     
     local clients="[]"
-    while IFS='|' read -r name uuid used quota enabled port; do
-        [[ -z "$name" || "$enabled" != "true" ]] && continue
+    while IFS='|' read -r name uuid used quota enabled port routing; do
+        [[ -z "$name" || -z "$uuid" || "$enabled" != "true" ]] && continue
         local email="${name}@${proto}"
+        # SS2022 使用 password 字段
         clients=$(echo "$clients" | jq --arg pw "$uuid" --arg e "$email" '. + [{password: $pw, email: $e}]')
     done <<< "$users"
     
@@ -562,19 +602,30 @@ gen_xray_socks_accounts() {
     
     local users=$(db_get_users_stats "xray" "$proto")
     if [[ -z "$users" ]]; then
-        local username=$(db_get_field "xray" "$proto" "username")
-        local password=$(db_get_field "xray" "$proto" "password")
-        if [[ -n "$username" && -n "$password" ]]; then
-            echo "[{\"user\":\"$username\",\"pass\":\"$password\"}]"
-        else
-            echo "[]"
+        # 尝试从配置中获取默认账号（支持多端口数组）
+        local config=$(db_get "xray" "$proto")
+        if [[ -n "$config" && "$config" != "null" ]]; then
+            local username password
+            if echo "$config" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                username=$(echo "$config" | jq -r '.[0].username // empty')
+                password=$(echo "$config" | jq -r '.[0].password // empty')
+            else
+                username=$(echo "$config" | jq -r '.username // empty')
+                password=$(echo "$config" | jq -r '.password // empty')
+            fi
+            if [[ -n "$username" && -n "$password" ]]; then
+                echo "[{\"user\":\"$username\",\"pass\":\"$password\"}]"
+                return
+            fi
         fi
+        echo "[]"
         return
     fi
     
     local accounts="[]"
-    while IFS='|' read -r name uuid used quota enabled port; do
-        [[ -z "$name" || "$enabled" != "true" ]] && continue
+    while IFS='|' read -r name uuid used quota enabled port routing; do
+        [[ -z "$name" || -z "$uuid" || "$enabled" != "true" ]] && continue
+        # SOCKS5: name 是 username，uuid 是 password
         accounts=$(echo "$accounts" | jq --arg u "$name" --arg p "$uuid" '. + [{user: $u, pass: $p}]')
     done <<< "$users"
     
@@ -601,106 +652,6 @@ gen_xray_socks_accounts() {
 # quota: 流量配额(字节)，0 表示无限制
 # used: 已用流量(字节)
 # enabled: 是否启用
-
-# 重建 Xray 配置并重载服务
-# 用法: rebuild_and_reload_xray ["silent"]
-# 从数据库读取所有用户，更新 config.json 中的 clients 数组，然后重启 xray
-rebuild_and_reload_xray() {
-    local silent="${1:-}"
-    local config_file="$CFG/config.json"
-    
-    [[ ! -f "$config_file" ]] && return 1
-    [[ ! -f "$DB_FILE" ]] && return 1
-    
-    local updated=false
-    local tmp_config=$(mktemp)
-    cp "$config_file" "$tmp_config"
-    
-    # 遍历数据库中所有 xray 协议，更新对应的 clients
-    for proto in $(jq -r '.xray | keys[]' "$DB_FILE" 2>/dev/null); do
-        local users=$(db_get_users_stats "xray" "$proto")
-        [[ -z "$users" ]] && continue
-        
-        # 根据协议类型生成 clients 数组
-        local clients=""
-        case "$proto" in
-            vless|vless-ws|vless-reality|vless-xhttp)
-                clients=$(gen_xray_vless_clients "$proto")
-                ;;
-            vmess|vmess-ws)
-                clients=$(gen_xray_vmess_clients "$proto")
-                ;;
-            trojan|trojan-ws)
-                clients=$(gen_xray_trojan_clients "$proto")
-                ;;
-            ss2022)
-                clients=$(gen_xray_ss2022_clients "$proto")
-                ;;
-            socks5)
-                # SOCKS5 使用 accounts 而不是 clients
-                local accounts=$(gen_xray_socks_accounts "$proto")
-                if [[ -n "$accounts" && "$accounts" != "[]" ]]; then
-                    # 查找对应的 inbound 并更新 accounts
-                    local port=$(db_get_field "xray" "$proto" "port")
-                    if [[ -n "$port" ]]; then
-                        jq --argjson accs "$accounts" --argjson p "$port" '
-                            .inbounds |= map(
-                                if .port == $p and .protocol == "socks" then
-                                    .settings.accounts = $accs
-                                else
-                                    .
-                                end
-                            )
-                        ' "$tmp_config" > "${tmp_config}.new" && mv "${tmp_config}.new" "$tmp_config"
-                        updated=true
-                    fi
-                fi
-                continue
-                ;;
-            *)
-                continue
-                ;;
-        esac
-        
-        # 更新 config.json 中对应 inbound 的 clients
-        if [[ -n "$clients" && "$clients" != "[]" ]]; then
-            local port=$(db_get_field "xray" "$proto" "port")
-            if [[ -n "$port" ]]; then
-                jq --argjson cls "$clients" --argjson p "$port" '
-                    .inbounds |= map(
-                        if .port == $p then
-                            .settings.clients = $cls
-                        else
-                            .
-                        end
-                    )
-                ' "$tmp_config" > "${tmp_config}.new" && mv "${tmp_config}.new" "$tmp_config"
-                updated=true
-            fi
-        fi
-    done
-    
-    # 如果有更新，替换配置文件并重启 xray
-    if [[ "$updated" == "true" ]]; then
-        mv "$tmp_config" "$config_file"
-        
-        # 重启 xray 服务
-        if [[ "$DISTRO" == "alpine" ]]; then
-            rc-service xray restart 2>/dev/null || pkill -HUP xray 2>/dev/null
-        else
-            systemctl restart xray 2>/dev/null || pkill -HUP xray 2>/dev/null
-        fi
-        
-        [[ "$silent" != "silent" ]] && _ok "配置已更新"
-        
-        # 同步隧道配置（如果有）
-        _sync_tunnel_config 2>/dev/null || true
-    else
-        rm -f "$tmp_config"
-    fi
-    
-    return 0
-}
 
 # 添加用户到协议 (支持多端口数组格式)
 # 用法: db_add_user "xray" "vless" "用户名" "uuid" [配额GB]
@@ -828,16 +779,16 @@ db_list_users() {
         if $cfg == null then
             empty
         elif ($cfg | type) == "array" then
-            # 多端口: 合并所有端口的 users + 没有 users 的端口输出 "default_端口"
+            # 多端口: 合并所有端口的 users，无 users 时输出 "default"（与 Xray email 格式一致）
             ($cfg | map(
                 if (.users | length) > 0 then
                     .users[].name
                 elif (.uuid != null or .password != null) then
-                    "default_" + (.port | tostring)
+                    "default"
                 else
                     empty
                 end
-            ) | .[]) // empty
+            ) | unique | .[]) // empty
         else
             # 单端口
             if ($cfg.users | length) > 0 then
@@ -995,9 +946,113 @@ db_is_user_over_quota() {
     [[ "$result" == "yes" ]]
 }
 
+# 获取用户告警状态 (用于防止重复通知)
+# 用法: db_get_user_alert_state "xray" "vless" "用户名" "last_alert_percent|quota_exceeded_notified"
+db_get_user_alert_state() {
+    local core="$1" proto="$2" name="$3" field="$4"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    jq -r --arg c "$core" --arg p "$proto" --arg n "$name" --arg f "$field" '
+        .[$c][$p] as $cfg |
+        if $cfg == null then ""
+        elif ($cfg | type) == "array" then
+            [$cfg[].users // [] | .[] | select(.name == $n)] | .[0][$f] // ""
+        else
+            ($cfg.users // [] | map(select(.name == $n)) | .[0][$f]) // ""
+        end
+    ' "$DB_FILE" 2>/dev/null
+}
+
+# 设置用户告警状态 (支持多端口数组格式)
+# 用法: db_set_user_alert_state "xray" "vless" "用户名" "last_alert_percent" 80
+db_set_user_alert_state() {
+    local core="$1" proto="$2" name="$3" field="$4" value="$5"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    local tmp_file="${DB_FILE}.tmp"
+    
+    # 根据值类型选择合适的 jq 参数
+    if [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" == "true" ]] || [[ "$value" == "false" ]]; then
+        jq --arg c "$core" --arg p "$proto" --arg n "$name" --arg f "$field" --argjson v "$value" '
+            .[$c][$p] as $cfg |
+            if ($cfg | type) == "array" then
+                .[$c][$p] = [$cfg[] | .users = ([.users // [] | .[] | if .name == $n then .[$f] = $v else . end])]
+            else
+                .[$c][$p].users = [.[$c][$p].users // [] | .[] | if .name == $n then .[$f] = $v else . end]
+            end
+        ' "$DB_FILE" > "$tmp_file" && mv "$tmp_file" "$DB_FILE"
+    else
+        jq --arg c "$core" --arg p "$proto" --arg n "$name" --arg f "$field" --arg v "$value" '
+            .[$c][$p] as $cfg |
+            if ($cfg | type) == "array" then
+                .[$c][$p] = [$cfg[] | .users = ([.users // [] | .[] | if .name == $n then .[$f] = $v else . end])]
+            else
+                .[$c][$p].users = [.[$c][$p].users // [] | .[] | if .name == $n then .[$f] = $v else . end]
+            end
+        ' "$DB_FILE" > "$tmp_file" && mv "$tmp_file" "$DB_FILE"
+    fi
+}
+# 设置用户路由 (支持多端口数组格式)
+# 用法: db_set_user_routing "xray" "vless" "用户名" "direct|warp|chain:xxx|balancer:xxx"
+# routing 值说明:
+#   "" 或 null - 使用全局规则
+#   "direct" - 直连出站
+#   "warp" - WARP 出站
+#   "chain:节点名" - 链式代理指定节点
+#   "balancer:组名" - 负载均衡组
+db_set_user_routing() {
+    local core="$1" proto="$2" name="$3" routing="$4"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    local tmp_file="${DB_FILE}.tmp"
+    jq --arg c "$core" --arg p "$proto" --arg n "$name" --arg r "$routing" '
+        .[$c][$p] as $cfg |
+        if ($cfg | type) == "array" then
+            .[$c][$p] = [$cfg[] | .users = ([.users // [] | .[] | if .name == $n then .routing = $r else . end])]
+        else
+            .[$c][$p].users = [.[$c][$p].users // [] | .[] | if .name == $n then .routing = $r else . end]
+        end
+    ' "$DB_FILE" > "$tmp_file" && mv "$tmp_file" "$DB_FILE"
+    
+    # 自动重建配置
+    [[ "$core" == "xray" ]] && rebuild_and_reload_xray "silent"
+}
+
+# 获取用户路由 (支持多端口数组格式)
+# 用法: db_get_user_routing "xray" "vless" "用户名"
+# 返回: routing 值，空表示使用全局规则
+db_get_user_routing() {
+    local core="$1" proto="$2" name="$3"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    jq -r --arg c "$core" --arg p "$proto" --arg n "$name" '
+        .[$c][$p] as $cfg |
+        if $cfg == null then ""
+        elif ($cfg | type) == "array" then
+            [$cfg[].users // [] | .[] | select(.name == $n)] | .[0].routing // ""
+        else
+            ($cfg.users // [] | map(select(.name == $n)) | .[0].routing) // ""
+        end
+    ' "$DB_FILE" 2>/dev/null
+}
+
+# 格式化显示用户路由
+# 用法: _format_user_routing "direct" -> "直连"
+_format_user_routing() {
+    local routing="$1"
+    case "$routing" in
+        ""|null) echo "全局规则" ;;
+        direct) echo "直连" ;;
+        warp) echo "WARP" ;;
+        chain:*) echo "链路→${routing#chain:}" ;;
+        balancer:*) echo "负载→${routing#balancer:}" ;;
+        *) echo "$routing" ;;
+    esac
+}
+
 # 获取所有用户的流量统计 (用于显示，支持多端口数组格式)
 # 用法: db_get_users_stats "xray" "vless"
-# 输出: name|uuid|used|quota|enabled|port (每行一个用户)
+# 输出: name|uuid|used|quota|enabled|port|routing (每行一个用户)
 # 多端口时合并所有端口的用户，无 users 的端口输出默认用户
 db_get_users_stats() {
     local core="$1" proto="$2"
@@ -1011,19 +1066,19 @@ db_get_users_stats() {
             # 多端口数组
             $cfg[] | . as $port_cfg |
             if (.users | length) > 0 then
-                .users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($port_cfg.port)"
-            elif (.uuid != null or .password != null) then
-                # 无 users 数组，生成默认用户
-                "default_\(.port)|\(.uuid // .password)|0|0|true|\(.port)"
+                .users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($port_cfg.port)|\(.routing // "")"
+            elif (.uuid != null or .password != null or .username != null) then
+                # 无 users 数组，生成默认用户（与 Xray email 格式一致使用 "default"）
+                "default|\(.uuid // .password // .username)|0|0|true|\(.port)|"
             else
                 empty
             end
         else
             # 单端口对象
             if ($cfg.users | length) > 0 then
-                $cfg.users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($cfg.port)"
-            elif ($cfg.uuid != null or $cfg.password != null) then
-                "default|\($cfg.uuid // $cfg.password)|0|0|true|\($cfg.port)"
+                $cfg.users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($cfg.port)|\(.routing // "")"
+            elif ($cfg.uuid != null or $cfg.password != null or $cfg.username != null) then
+                "default|\($cfg.uuid // $cfg.password // $cfg.username)|0|0|true|\($cfg.port)|"
             else
                 empty
             end
@@ -1230,7 +1285,7 @@ tg_send_daily_report() {
             local stats=$(db_get_users_stats "$core" "$proto" 2>/dev/null)
             [[ -z "$stats" ]] && continue
             
-            while IFS='|' read -r name uuid used quota enabled port; do
+            while IFS='|' read -r name uuid used quota enabled port routing; do
                 [[ -z "$name" ]] && continue
                 ((total_users++))
                 total_used=$((total_used + used))
@@ -1350,14 +1405,34 @@ sync_all_user_traffic() {
     
     [[ ! -f "$DB_FILE" ]] && return 1
     
-    # 检查 Xray 是否运行
-    if ! pgrep -x xray &>/dev/null; then
+    # 检查 Xray 是否运行 (使用兼容 Alpine 的 _pgrep)
+    if ! _pgrep xray; then
         return 1
     fi
     
+    # 使用临时文件存储 API 结果，避免内存问题
+    local tmp_stats=$(mktemp)
+    trap "rm -f '$tmp_stats'" RETURN
+    
+    # 一次性获取所有流量统计（带重置选项）
+    local reset_flag=""
+    [[ "$reset" == "true" ]] && reset_flag="-reset"
+    
+    if ! xray api statsquery --server=127.0.0.1:${XRAY_API_PORT} $reset_flag 2>/dev/null | \
+         jq -r '.stat[]? | "\(.name) \(.value // 0)"' > "$tmp_stats" 2>/dev/null; then
+        rm -f "$tmp_stats"
+        return 1
+    fi
+    
+    [[ ! -s "$tmp_stats" ]] && { rm -f "$tmp_stats"; return 0; }
+    
     local updated=0
+    local need_reload=false  # 标记是否需要重载配置
     local notify_percent=$(tg_get_config "notify_quota_percent")
     notify_percent=${notify_percent:-80}
+    
+    # 定义告警阈值档位（依次检查，每档只发一次）
+    local -a alert_thresholds=(80 90 95)
     
     # 遍历所有 Xray 协议
     for proto in $(db_list_protocols "xray"); do
@@ -1366,7 +1441,14 @@ sync_all_user_traffic() {
         
         for user in $users; do
             local email="${user}@${proto}"
-            local traffic=$(get_user_traffic "$email" "$reset")
+            
+            # 从临时文件中提取流量值
+            local uplink=$(grep -F "user>>>${email}>>>traffic>>>uplink " "$tmp_stats" 2>/dev/null | awk '{print $NF}')
+            local downlink=$(grep -F "user>>>${email}>>>traffic>>>downlink " "$tmp_stats" 2>/dev/null | awk '{print $NF}')
+            
+            uplink=${uplink:-0}
+            downlink=${downlink:-0}
+            local traffic=$((uplink + downlink))
             
             if [[ "$traffic" -gt 0 ]]; then
                 # 更新数据库
@@ -1380,23 +1462,53 @@ sync_all_user_traffic() {
                 if [[ "$quota" -gt 0 ]]; then
                     local percent=$((used * 100 / quota))
                     
-                    # 超限检查
+                    # 超限检查 (只处理一次)
                     if [[ "$used" -ge "$quota" ]]; then
-                        # 禁用用户
-                        db_set_user_enabled "xray" "$proto" "$user" "false"
-                        # 发送通知
-                        tg_send_over_quota "$user" "$proto" "$used" "$quota"
-                        # 重新生成配置
-                        generate_xray_config
-                        svc restart vless-reality 2>/dev/null
+                        # 检查是否已发送过超限通知
+                        local exceeded_notified=$(db_get_user_alert_state "xray" "$proto" "$user" "quota_exceeded_notified")
+                        if [[ "$exceeded_notified" != "true" ]]; then
+                            # 禁用用户
+                            db_set_user_enabled "xray" "$proto" "$user" "false"
+                            # 标记已发送超限通知
+                            db_set_user_alert_state "xray" "$proto" "$user" "quota_exceeded_notified" "true"
+                            # 发送通知
+                            tg_send_over_quota "$user" "$proto" "$used" "$quota"
+                            # 标记需要重载配置
+                            need_reload=true
+                        fi
                     elif [[ "$percent" -ge "$notify_percent" ]]; then
-                        # 发送告警
-                        tg_send_quota_alert "$user" "$proto" "$used" "$quota" "$percent"
+                        # 告警检查：只在跨越新的阈值档位时发送
+                        local last_alert=$(db_get_user_alert_state "xray" "$proto" "$user" "last_alert_percent")
+                        last_alert=${last_alert:-0}
+                        
+                        # 找到当前应该告警的最高档位
+                        local should_alert=false
+                        local current_threshold=0
+                        for threshold in "${alert_thresholds[@]}"; do
+                            if [[ "$percent" -ge "$threshold" && "$last_alert" -lt "$threshold" ]]; then
+                                should_alert=true
+                                current_threshold=$threshold
+                            fi
+                        done
+                        
+                        if [[ "$should_alert" == "true" ]]; then
+                            # 发送告警并更新记录
+                            tg_send_quota_alert "$user" "$proto" "$used" "$quota" "$percent"
+                            db_set_user_alert_state "xray" "$proto" "$user" "last_alert_percent" "$current_threshold"
+                        fi
                     fi
                 fi
             fi
         done
     done
+    
+    rm -f "$tmp_stats"
+    
+    # 批量处理完成后统一重载配置（避免循环内多次重启）
+    if [[ "$need_reload" == "true" ]]; then
+        generate_xray_config 2>/dev/null
+        svc restart vless-reality 2>/dev/null
+    fi
     
     # 检查是否需要发送每日报告
     check_daily_report
@@ -1409,6 +1521,20 @@ sync_all_user_traffic() {
 get_all_traffic_stats() {
     [[ ! -f "$DB_FILE" ]] && return 1
     
+    # 使用临时文件存储，避免大变量导致内存问题
+    local tmp_stats=$(mktemp)
+    trap "rm -f '$tmp_stats'" RETURN
+    
+    # 一次性获取所有流量统计，直接用管道处理
+    if ! xray api statsquery --server=127.0.0.1:${XRAY_API_PORT} 2>/dev/null | \
+         jq -r '.stat[]? | "\(.name) \(.value // 0)"' > "$tmp_stats" 2>/dev/null; then
+        rm -f "$tmp_stats"
+        return 0
+    fi
+    
+    [[ ! -s "$tmp_stats" ]] && { rm -f "$tmp_stats"; return 0; }
+    
+    # 遍历用户，用 grep 快速查找
     for proto in $(db_list_protocols "xray"); do
         local users=$(db_list_users "xray" "$proto")
         [[ -z "$users" ]] && continue
@@ -1416,21 +1542,9 @@ get_all_traffic_stats() {
         for user in $users; do
             local email="${user}@${proto}"
             
-            # 查询实时流量 (不重置)
-            local up_result=$(xray_api_query "user>>>$email>>>traffic>>>uplink" "false" 2>/dev/null)
-            local down_result=$(xray_api_query "user>>>$email>>>traffic>>>downlink" "false" 2>/dev/null)
-            
-            # 使用 jq 解析
-            local uplink=$(echo "$up_result" | jq -r '.stat[]? | select(.name | contains("uplink")) | .value // 0' 2>/dev/null | head -1)
-            local downlink=$(echo "$down_result" | jq -r '.stat[]? | select(.name | contains("downlink")) | .value // 0' 2>/dev/null | head -1)
-            
-            # 如果 jq 失败，尝试 grep
-            if [[ -z "$uplink" || "$uplink" == "null" ]]; then
-                uplink=$(echo "$up_result" | grep -o '"value":[0-9]*' | head -1 | grep -o '[0-9]*')
-            fi
-            if [[ -z "$downlink" || "$downlink" == "null" ]]; then
-                downlink=$(echo "$down_result" | grep -o '"value":[0-9]*' | head -1 | grep -o '[0-9]*')
-            fi
+            # 用 grep 从临时文件中提取流量值
+            local uplink=$(grep -F "user>>>${email}>>>traffic>>>uplink " "$tmp_stats" 2>/dev/null | awk '{print $NF}')
+            local downlink=$(grep -F "user>>>${email}>>>traffic>>>downlink " "$tmp_stats" 2>/dev/null | awk '{print $NF}')
             
             uplink=${uplink:-0}
             downlink=${downlink:-0}
@@ -1439,6 +1553,8 @@ get_all_traffic_stats() {
             echo "${proto}|${user}|${uplink}|${downlink}|${total}"
         done
     done
+    
+    rm -f "$tmp_stats"
 }
 
 # 获取流量检测间隔 (分钟)
@@ -1643,6 +1759,135 @@ EOF
     return 0
 }
 
+# 配置 Nginx 反代 XHTTP (h2c 模式，用于 TLS+CDN)
+# 用法: _setup_nginx_xhttp_proxy "domain.com" "18080" "/xhttp_path"
+_setup_nginx_xhttp_proxy() {
+    local domain="$1"
+    local internal_port="$2"
+    local path="$3"
+    local nginx_conf=""
+    
+    # 确定 nginx 配置文件路径
+    if [[ -d "/etc/nginx/http.d" ]]; then
+        nginx_conf="/etc/nginx/http.d/xhttp-cdn.conf"
+    elif [[ -d "/etc/nginx/sites-available" ]]; then
+        nginx_conf="/etc/nginx/sites-available/xhttp-cdn"
+    elif [[ -d "/etc/nginx/conf.d" ]]; then
+        nginx_conf="/etc/nginx/conf.d/xhttp-cdn.conf"
+    else
+        _err "未找到 Nginx 配置目录"
+        return 1
+    fi
+    
+    # 确保 nginx 已安装
+    if ! command -v nginx &>/dev/null; then
+        _err "Nginx 未安装"
+        return 1
+    fi
+    
+    # 生成 XHTTP 反代配置 (h2c 模式)
+    # 注意: 使用 listen ... http2 语法兼容所有 Nginx 版本
+    cat > "$nginx_conf" << 'NGINX_EOF'
+# XHTTP TLS+CDN 反代配置 - 供 Cloudflare CDN 使用
+# 此配置由脚本自动生成，请勿手动修改
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    
+    server_name DOMAIN_PLACEHOLDER;
+    
+    ssl_certificate CFG_PLACEHOLDER/certs/server.crt;
+    ssl_certificate_key CFG_PLACEHOLDER/certs/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    
+    # XHTTP 路径反代到 Xray (h2c)
+    location PATH_PLACEHOLDER {
+        grpc_pass grpc://127.0.0.1:PORT_PLACEHOLDER;
+        grpc_set_header Host $host;
+        grpc_set_header X-Real-IP $remote_addr;
+        grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    
+    # 其他路径返回伪装页面
+    location / {
+        root /var/www/html;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+    
+    server_tokens off;
+}
+NGINX_EOF
+    
+    # 替换占位符
+    sed -i "s|DOMAIN_PLACEHOLDER|${domain}|g" "$nginx_conf"
+    sed -i "s|CFG_PLACEHOLDER|${CFG}|g" "$nginx_conf"
+    sed -i "s|PATH_PLACEHOLDER|${path}|g" "$nginx_conf"
+    sed -i "s|PORT_PLACEHOLDER|${internal_port}|g" "$nginx_conf"
+    
+    # 如果是 sites-available 模式，创建软链接
+    if [[ "$nginx_conf" == *"sites-available"* ]]; then
+        ln -sf "$nginx_conf" "/etc/nginx/sites-enabled/xhttp-cdn" 2>/dev/null
+    fi
+    
+    # 测试并重载 nginx
+    if nginx -t &>/dev/null; then
+        nginx -s reload &>/dev/null
+        _ok "Nginx XHTTP 反代配置成功"
+        return 0
+    else
+        _err "Nginx 配置错误"
+        nginx -t
+        return 1
+    fi
+}
+
+# 生成 VLESS+XHTTP+TLS+CDN 配置 (无 Reality，纯 h2c 模式)
+# 用法: gen_vless_xhttp_tls_cdn_config "$uuid" "$port" "$path" "$domain"
+gen_vless_xhttp_tls_cdn_config() {
+    local uuid="$1"
+    local port="$2"
+    local path="$3"
+    local domain="$4"
+    local protocol="vless-xhttp-cdn"
+    
+    # 保存到数据库 (对外端口固定为 443，内部端口为用户指定)
+    local config_json=$(build_config \
+        "uuid" "$uuid" \
+        "port" "$port" \
+        "internal_port" "$port" \
+        "path" "$path" \
+        "domain" "$domain" \
+        "sni" "$domain" \
+        "mode" "tls-cdn")
+    
+    # 添加默认用户
+    config_json=$(echo "$config_json" | jq --arg name "default" --arg uuid "$uuid" \
+        '.users = [{"name": $name, "uuid": $uuid, "quota": 0, "used": 0, "enabled": true, "created": (now | strftime("%Y-%m-%d"))}]')
+    
+    # 使用 register_protocol 支持多端口和覆盖模式
+    register_protocol "$protocol" "$config_json"
+    
+    # 生成分享链接 (URL 编码 path)
+    local encoded_path=$(printf '%s' "$path" | sed 's|/|%2F|g')
+    local share_link="vless://${uuid}@${domain}:443?encryption=none&security=tls&sni=${domain}&type=xhttp&host=${domain}&path=${encoded_path}&mode=auto#XHTTP-CDN"
+    
+    # 保存 JOIN 信息
+    echo "# XHTTP TLS+CDN" > "$CFG/${protocol}.join"
+    echo "XHTTP_CDN_LINK=${share_link}" >> "$CFG/${protocol}.join"
+    
+    _ok "配置生成成功"
+    echo ""
+    echo -e "  ${C}分享链接:${NC}"
+    echo -e "  ${G}${share_link}${NC}"
+    echo ""
+    echo -e "  ${Y}客户端配置:${NC} 地址=${domain}, 端口=443, TLS=开启"
+    
+    return 0
+}
+
 # 处理独立协议的证书 (WS 类协议独立安装时使用)
 # 用法: _handle_standalone_cert "$sni" "$force_new_cert"
 _handle_standalone_cert() {
@@ -1773,7 +2018,7 @@ fi
 #═══════════════════════════════════════════════════════════════════════════════
 
 # 协议分类定义 (重构: Sing-box 接管独立协议)
-XRAY_PROTOCOLS="vless vless-xhttp vless-ws vmess-ws vless-vision trojan socks ss2022 ss-legacy"
+XRAY_PROTOCOLS="vless vless-xhttp vless-xhttp-cdn vless-ws vless-ws-notls vmess-ws vless-vision trojan socks ss2022 ss-legacy"
 # Sing-box 管理的协议 (原独立协议，现统一由 Sing-box 处理)
 SINGBOX_PROTOCOLS="hy2 tuic"
 # 仍需独立进程的协议 (Snell 等闭源协议)
@@ -1858,15 +2103,15 @@ register_protocol() {
     # 根据安装模式处理
     if [[ "$INSTALL_MODE" == "replace" && -n "$REPLACE_PORT" ]]; then
         # 覆盖模式：更新指定端口的配置
-        echo -e "${CYAN}覆盖端口 $REPLACE_PORT 的配置...${NC}"
+        echo -e "  ${CYAN}覆盖端口 $REPLACE_PORT 的配置...${NC}"
         db_update_port "$core" "$protocol" "$REPLACE_PORT" "$config_json"
     elif [[ "$INSTALL_MODE" == "add" ]]; then
         # 添加模式：添加新端口实例
-        echo -e "${CYAN}添加新端口 $port 实例...${NC}"
+        echo -e "  ${CYAN}添加新端口 $port 实例...${NC}"
         db_add_port "$core" "$protocol" "$config_json"
     elif is_protocol_installed "$protocol"; then
         # 协议已存在但未指定模式：默认添加新端口
-        echo -e "${CYAN}添加新端口 $port 实例...${NC}"
+        echo -e "  ${CYAN}添加新端口 $port 实例...${NC}"
         db_add_port "$core" "$protocol" "$config_json"
     else
         # 首次安装：使用单对象格式
@@ -1912,12 +2157,104 @@ get_xray_protocols()       { filter_installed "$XRAY_PROTOCOLS"; }
 get_singbox_protocols()    { filter_installed "$SINGBOX_PROTOCOLS"; }
 get_standalone_protocols() { filter_installed "$STANDALONE_PROTOCOLS"; }
 
+# 生成用户级路由规则
+# 遍历所有用户，为有自定义routing的用户生成Xray routing rules
+# 返回: JSON数组格式的路由规则
+gen_xray_user_routing_rules() {
+    local rules="[]"
+    
+    # 遍历所有 Xray 协议
+    local xray_protocols=$(get_xray_protocols)
+    [[ -z "$xray_protocols" ]] && { echo "[]"; return; }
+    
+    for proto in $xray_protocols; do
+        local stats=$(db_get_users_stats "xray" "$proto")
+        [[ -z "$stats" ]] && continue
+        
+        while IFS='|' read -r name uuid used quota enabled port routing; do
+            [[ -z "$name" || -z "$routing" || "$routing" == "null" ]] && continue
+            [[ "$enabled" != "true" ]] && continue  # 只为启用的用户生成规则
+            
+            local email="${name}@${proto}"
+            
+            case "$routing" in
+                direct)
+                    local rule=$(jq -n \
+                        --arg user "$email" \
+                        '{type: "field", user: [$user], outboundTag: "direct"}')
+                    rules=$(echo "$rules" | jq --argjson r "$rule" '. + [$r]')
+                    ;;
+                warp)
+                    local rule=$(jq -n \
+                        --arg user "$email" \
+                        '{type: "field", user: [$user], outboundTag: "warp-prefer-ipv4"}')
+                    rules=$(echo "$rules" | jq --argjson r "$rule" '. + [$r]')
+                    ;;
+                chain:*)
+                    local node_name="${routing#chain:}"
+                    local outbound_tag="chain-${node_name}-prefer-ipv4"
+                    local rule=$(jq -n \
+                        --arg user "$email" \
+                        --arg tag "$outbound_tag" \
+                        '{type: "field", user: [$user], outboundTag: $tag}')
+                    rules=$(echo "$rules" | jq --argjson r "$rule" '. + [$r]')
+                    ;;
+                balancer:*)
+                    local group_name="${routing#balancer:}"
+                    local balancer_tag="balancer-${group_name}"
+                    # 负载均衡使用 balancerTag 而不是 outboundTag
+                    local rule=$(jq -n \
+                        --arg user "$email" \
+                        --arg tag "$balancer_tag" \
+                        '{type: "field", user: [$user], balancerTag: $tag}')
+                    rules=$(echo "$rules" | jq --argjson r "$rule" '. + [$r]')
+                    ;;
+            esac
+        done <<< "$stats"
+    done
+    
+    echo "$rules"
+}
+
+# 获取用户路由需要的额外outbounds (确保WARP/链式代理等出口存在)
+# 返回: 需要添加的outbound tags列表
+gen_xray_user_routing_outbounds() {
+    local outbounds_needed=""
+    
+    local xray_protocols=$(get_xray_protocols)
+    [[ -z "$xray_protocols" ]] && return
+    
+    for proto in $xray_protocols; do
+        local stats=$(db_get_users_stats "xray" "$proto")
+        [[ -z "$stats" ]] && continue
+        
+        while IFS='|' read -r name uuid used quota enabled port routing; do
+            [[ -z "$routing" || "$routing" == "null" ]] && continue
+            
+            case "$routing" in
+                warp)
+                    echo "warp"
+                    ;;
+                chain:*)
+                    echo "$routing"
+                    ;;
+                balancer:*)
+                    echo "$routing"
+                    ;;
+            esac
+        done <<< "$stats"
+    done | sort -u
+}
+
 # 生成 Xray 多 inbounds 配置
 generate_xray_config() {
     local xray_protocols=$(get_xray_protocols)
     [[ -z "$xray_protocols" ]] && return 1
     
     mkdir -p "$CFG"
+    
+    # 确保日志目录存在
+    mkdir -p /var/log/xray
     
     # 读取直连出口 IP 版本设置（默认 AsIs）
     local direct_ip_version="as_is"
@@ -2107,6 +2444,42 @@ generate_xray_config() {
         routing_rules=$(gen_xray_routing_rules)
         [[ -n "$routing_rules" && "$routing_rules" != "[]" ]] && has_routing=true
         
+        # 添加用户级路由规则 (优先级高于全局规则)
+        local user_routing_rules=$(gen_xray_user_routing_rules)
+        if [[ -n "$user_routing_rules" && "$user_routing_rules" != "[]" ]]; then
+            # 确保用户路由需要的outbounds存在
+            local user_routing_needs=$(gen_xray_user_routing_outbounds)
+            for need in $user_routing_needs; do
+                case "$need" in
+                    warp)
+                        if ! echo "$outbounds" | jq -e '.[] | select(.tag == "warp-prefer-ipv4")' >/dev/null 2>&1; then
+                            local warp_out=$(gen_xray_warp_outbound)
+                            if [[ -n "$warp_out" ]]; then
+                                local warp_out_v4=$(echo "$warp_out" | jq '.tag = "warp-prefer-ipv4" | .domainStrategy = "ForceIPv4v6"')
+                                outbounds=$(echo "$outbounds" | jq --argjson out "$warp_out_v4" '. + [$out]')
+                            fi
+                        fi
+                        ;;
+                    chain:*)
+                        local node_name="${need#chain:}"
+                        local tag="chain-${node_name}-prefer-ipv4"
+                        if ! echo "$outbounds" | jq -e --arg tag "$tag" '.[] | select(.tag == $tag)' >/dev/null 2>&1; then
+                            local chain_out=$(gen_xray_chain_outbound "$node_name" "$tag" "prefer_ipv4")
+                            [[ -n "$chain_out" ]] && outbounds=$(echo "$outbounds" | jq --argjson out "$chain_out" '. + [$out]')
+                        fi
+                        ;;
+                esac
+            done
+            
+            # 用户级规则放在最前面，优先匹配
+            if [[ -n "$routing_rules" && "$routing_rules" != "[]" ]]; then
+                routing_rules=$(echo "$user_routing_rules" | jq --argjson global_rules "$routing_rules" '. + $global_rules')
+            else
+                routing_rules="$user_routing_rules"
+            fi
+            has_routing=true
+        fi
+        
         # 添加多IP路由的outbound和routing规则
         local ip_routing_outbounds=$(gen_xray_ip_routing_outbounds)
         if [[ -n "$ip_routing_outbounds" && "$ip_routing_outbounds" != "[]" ]]; then
@@ -2194,17 +2567,29 @@ generate_xray_config() {
     
     # 构建基础配置
     if [[ "$has_routing" == "true" ]]; then
+        # 添加 api outbound
+        outbounds=$(echo "$outbounds" | jq '. + [{protocol: "blackhole", tag: "api"}]')
+        
         jq -n --argjson outbounds "$outbounds" --argjson balancers "$balancers" '{
-            log: {loglevel: "warning"},
-            inbounds: [],
+            log: {loglevel: "warning", access: "/var/log/xray/access.log", error: "/var/log/xray/error.log"},
+            api: {tag: "api", services: ["StatsService"]},
+            stats: {},
+            policy: {levels: {"0": {statsUserUplink: true, statsUserDownlink: true}}},
+            inbounds: [{listen: "127.0.0.1", port: 10085, protocol: "dokodemo-door", settings: {address: "127.0.0.1"}, tag: "api"}],
             outbounds: $outbounds,
             routing: {domainStrategy: "IPIfNonMatch", rules: [], balancers: $balancers}
         }' > "$CFG/config.json"
 
-        # 添加路由规则
+        # 添加路由规则（API 规则放最前面）
         if [[ -n "$routing_rules" && "$routing_rules" != "[]" ]]; then
+            local api_rule='{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}'
+            local all_rules=$(echo "$routing_rules" | jq --argjson api "$api_rule" '[$api] + .')
             local tmp=$(mktemp)
-            jq --argjson rules "$routing_rules" '.routing.rules = $rules' "$CFG/config.json" > "$tmp" && mv "$tmp" "$CFG/config.json"
+            jq --argjson rules "$all_rules" '.routing.rules = $rules' "$CFG/config.json" > "$tmp" && mv "$tmp" "$CFG/config.json"
+        else
+            # 即使没有其他规则，也要添加 API 规则
+            local tmp=$(mktemp)
+            jq '.routing.rules = [{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}]' "$CFG/config.json" > "$tmp" && mv "$tmp" "$CFG/config.json"
         fi
 
         # 检查是否使用了leastPing或leastLoad策略,添加burstObservatory配置
@@ -2255,12 +2640,92 @@ generate_xray_config() {
             ' "$CFG/config.json" > "$tmp" && mv "$tmp" "$CFG/config.json"
         fi
     else
-        # 无分流规则时沿用直连出口配置，确保 direct_ip_version 生效
-        jq -n --argjson direct "$direct_outbound" '{
-            log: {loglevel: "warning"},
-            inbounds: [],
-            outbounds: [$direct]
-        }' > "$CFG/config.json"
+        # 无全局分流规则时，仍然需要检查用户级路由规则和负载均衡器
+        local user_routing_rules=$(gen_xray_user_routing_rules)
+        local user_outbounds="[$direct_outbound]"
+        local user_balancers="[]"
+        
+        if [[ -n "$user_routing_rules" && "$user_routing_rules" != "[]" ]]; then
+            # 用户有自定义路由，需要生成对应的 outbounds 和 balancers
+            
+            # 确保用户路由需要的outbounds存在
+            local user_routing_needs=$(gen_xray_user_routing_outbounds)
+            for need in $user_routing_needs; do
+                case "$need" in
+                    warp)
+                        local warp_out=$(gen_xray_warp_outbound)
+                        if [[ -n "$warp_out" ]]; then
+                            local warp_out_v4=$(echo "$warp_out" | jq '.tag = "warp-prefer-ipv4" | .domainStrategy = "ForceIPv4v6"')
+                            user_outbounds=$(echo "$user_outbounds" | jq --argjson out "$warp_out_v4" '. + [$out]')
+                        fi
+                        ;;
+                    chain:*)
+                        local node_name="${need#chain:}"
+                        local tag="chain-${node_name}-prefer-ipv4"
+                        local chain_out=$(gen_xray_chain_outbound "$node_name" "$tag" "prefer_ipv4")
+                        [[ -n "$chain_out" ]] && user_outbounds=$(echo "$user_outbounds" | jq --argjson out "$chain_out" '. + [$out]')
+                        ;;
+                    balancer:*)
+                        # 需要生成 balancer 和对应的链式代理 outbounds
+                        local group_name="${need#balancer:}"
+                        local balancer_groups=$(db_get_balancer_groups)
+                        if [[ -n "$balancer_groups" && "$balancer_groups" != "[]" ]]; then
+                            local group_json=$(echo "$balancer_groups" | jq -c --arg name "$group_name" '.[] | select(.name == $name)')
+                            if [[ -n "$group_json" ]]; then
+                                local strategy=$(echo "$group_json" | jq -r '.strategy')
+                                local selectors="[]"
+                                while IFS= read -r node_name; do
+                                    [[ -z "$node_name" ]] && continue
+                                    local node_tag="chain-${node_name}-prefer-ipv4"
+                                    selectors=$(echo "$selectors" | jq --arg tag "$node_tag" '. + [$tag]')
+                                    # 确保节点 outbound 存在
+                                    if ! echo "$user_outbounds" | jq -e --arg tag "$node_tag" '.[] | select(.tag == $tag)' >/dev/null 2>&1; then
+                                        local chain_out=$(gen_xray_chain_outbound "$node_name" "$node_tag" "prefer_ipv4")
+                                        [[ -n "$chain_out" ]] && user_outbounds=$(echo "$user_outbounds" | jq --argjson out "$chain_out" '. + [$out]')
+                                    fi
+                                done < <(echo "$group_json" | jq -r '.nodes[]?')
+                                
+                                local balancer=$(jq -n \
+                                    --arg tag "balancer-${group_name}" \
+                                    --arg strategy "$strategy" \
+                                    --argjson selector "$selectors" \
+                                    '{tag: $tag, selector: $selector, strategy: {type: $strategy}}')
+                                user_balancers=$(echo "$user_balancers" | jq --argjson b "$balancer" '. + [$b]')
+                            fi
+                        fi
+                        ;;
+                esac
+            done
+            
+            # 添加 API 规则到用户路由规则前面
+            local api_rule='{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}'
+            local all_rules=$(echo "$user_routing_rules" | jq --argjson api "$api_rule" '[$api] + .')
+            
+            # 添加 api outbound
+            user_outbounds=$(echo "$user_outbounds" | jq '. + [{protocol: "blackhole", tag: "api"}]')
+            
+            # 生成包含用户路由的配置
+            jq -n --argjson outbounds "$user_outbounds" --argjson balancers "$user_balancers" --argjson rules "$all_rules" '{
+                log: {loglevel: "warning", access: "/var/log/xray/access.log", error: "/var/log/xray/error.log"},
+                api: {tag: "api", services: ["StatsService"]},
+                stats: {},
+                policy: {levels: {"0": {statsUserUplink: true, statsUserDownlink: true}}},
+                inbounds: [{listen: "127.0.0.1", port: 10085, protocol: "dokodemo-door", settings: {address: "127.0.0.1"}, tag: "api"}],
+                outbounds: $outbounds,
+                routing: {domainStrategy: "IPIfNonMatch", rules: $rules, balancers: $balancers}
+            }' > "$CFG/config.json"
+        else
+            # 无任何路由规则，使用简单直连配置（仍需要 API 规则）
+            jq -n --argjson direct "$direct_outbound" '{
+                log: {loglevel: "warning", access: "/var/log/xray/access.log", error: "/var/log/xray/error.log"},
+                api: {tag: "api", services: ["StatsService"]},
+                stats: {},
+                policy: {levels: {"0": {statsUserUplink: true, statsUserDownlink: true}}},
+                inbounds: [{listen: "127.0.0.1", port: 10085, protocol: "dokodemo-door", settings: {address: "127.0.0.1"}, tag: "api"}],
+                outbounds: [$direct, {protocol: "blackhole", tag: "api"}],
+                routing: {domainStrategy: "IPIfNonMatch", rules: [{type: "field", inboundTag: ["api"], outboundTag: "api"}]}
+            }' > "$CFG/config.json"
+        fi
     fi
     
     # 为每个 Xray 协议添加 inbound，并统计成功数量
@@ -2443,9 +2908,13 @@ add_xray_inbound_v2() {
     case "$base_protocol" in
         vless)
             # VLESS+Reality - 使用 jq 安全构建 (支持 WS 回落)
+            # 获取完整的用户列表（包含子用户和 email，用于流量统计）
+            local clients=$(gen_xray_vless_clients "$base_protocol" "xtls-rprx-vision")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"id\":\"$uuid\",\"email\":\"default@${base_protocol}\",\"flow\":\"xtls-rprx-vision\"}]"
+            
             jq -n \
                 --argjson port "$port" \
-                --arg uuid "$uuid" \
+                --argjson clients "$clients" \
                 --arg sni "$sni" \
                 --arg private_key "$private_key" \
                 --arg short_id "$short_id" \
@@ -2458,7 +2927,7 @@ add_xray_inbound_v2() {
                 listen: $listen_addr,
                 protocol: "vless",
                 settings: {
-                    clients: [{id: $uuid, flow: "xtls-rprx-vision"}],
+                    clients: $clients,
                     decryption: "none",
                     fallbacks: $fallbacks
                 },
@@ -2480,9 +2949,13 @@ add_xray_inbound_v2() {
             ;;
         vless-vision)
             # VLESS-Vision - 使用 jq 安全构建
+            # 获取完整的用户列表（包含子用户和 email，用于流量统计）
+            local clients=$(gen_xray_vless_clients "$base_protocol" "xtls-rprx-vision")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"id\":\"$uuid\",\"email\":\"default@${base_protocol}\",\"flow\":\"xtls-rprx-vision\"}]"
+            
             jq -n \
                 --argjson port "$port" \
-                --arg uuid "$uuid" \
+                --argjson clients "$clients" \
                 --arg cert "$CFG/certs/server.crt" \
                 --arg key "$CFG/certs/server.key" \
                 --arg tag "$inbound_tag" \
@@ -2493,7 +2966,7 @@ add_xray_inbound_v2() {
                 listen: $listen_addr,
                 protocol: "vless",
                 settings: {
-                    clients: [{id: $uuid, flow: "xtls-rprx-vision"}],
+                    clients: $clients,
                     decryption: "none",
                     fallbacks: $fallbacks
                 },
@@ -2511,11 +2984,16 @@ add_xray_inbound_v2() {
             }' > "$tmp_inbound"
             ;;
         vless-ws)
+            # 获取完整的用户列表（包含子用户和 email，用于流量统计）
+            # vless-ws 不需要 flow
+            local clients=$(gen_xray_vless_clients "$base_protocol")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"id\":\"$uuid\",\"email\":\"default@${base_protocol}\"}]"
+            
             if [[ "$has_master" == "true" ]]; then
                 # 回落模式：监听本地
                 jq -n \
                     --argjson port "$port" \
-                    --arg uuid "$uuid" \
+                    --argjson clients "$clients" \
                     --arg path "$path" \
                     --arg sni "$sni" \
                     --arg tag "$inbound_tag" \
@@ -2523,7 +3001,7 @@ add_xray_inbound_v2() {
                     port: $port,
                     listen: "127.0.0.1",
                     protocol: "vless",
-                    settings: {clients: [{id: $uuid}], decryption: "none"},
+                    settings: {clients: $clients, decryption: "none"},
                     streamSettings: {
                         network: "ws",
                         security: "none",
@@ -2536,7 +3014,7 @@ add_xray_inbound_v2() {
                 # 独立模式：监听公网
                 jq -n \
                     --argjson port "$port" \
-                    --arg uuid "$uuid" \
+                    --argjson clients "$clients" \
                     --arg path "$path" \
                     --arg sni "$sni" \
                     --arg cert "$CFG/certs/server.crt" \
@@ -2548,7 +3026,7 @@ add_xray_inbound_v2() {
                     listen: $listen_addr,
                     protocol: "vless",
                     settings: {
-                        clients: [{id: $uuid}],
+                        clients: $clients,
                         decryption: "none",
                         fallbacks: [{"dest":"127.0.0.1:80","xver":0}]
                     },
@@ -2566,10 +3044,44 @@ add_xray_inbound_v2() {
                 }' > "$tmp_inbound"
             fi
             ;;
-        vless-xhttp)
+        vless-ws-notls)
+            # VLESS-WS 无 TLS - 专为 CF Tunnel 设计
+            local clients=$(gen_xray_vless_clients "$base_protocol")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"id\":\"$uuid\",\"email\":\"default@${base_protocol}\"}]"
+            
+            # 从数据库获取 host 配置
+            local host=$(db_get_field "xray" "$base_protocol" "host")
+            [[ -z "$host" ]] && host=""
+            
             jq -n \
                 --argjson port "$port" \
-                --arg uuid "$uuid" \
+                --argjson clients "$clients" \
+                --arg path "$path" \
+                --arg host "$host" \
+                --arg listen_addr "$listen_addr" \
+                --arg tag "$inbound_tag" \
+            '{
+                port: $port,
+                listen: $listen_addr,
+                protocol: "vless",
+                settings: {clients: $clients, decryption: "none"},
+                streamSettings: {
+                    network: "ws",
+                    security: "none",
+                    wsSettings: {path: $path, headers: (if $host != "" then {Host: $host} else {} end)}
+                },
+                sniffing: {enabled: true, destOverride: ["http","tls"]},
+                tag: $tag
+            }' > "$tmp_inbound"
+            ;;
+        vless-xhttp)
+            # 获取完整的用户列表（包含子用户和 email，用于流量统计）
+            local clients=$(gen_xray_vless_clients "$base_protocol")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"id\":\"$uuid\",\"email\":\"default@${base_protocol}\"}]"
+            
+            jq -n \
+                --argjson port "$port" \
+                --argjson clients "$clients" \
                 --arg path "$path" \
                 --arg sni "$sni" \
                 --arg private_key "$private_key" \
@@ -2581,7 +3093,7 @@ add_xray_inbound_v2() {
                 port: $port,
                 listen: $listen_addr,
                 protocol: "vless",
-                settings: {clients: [{id: $uuid}], decryption: "none"},
+                settings: {clients: $clients, decryption: "none"},
                 streamSettings: {
                     network: "xhttp",
                     xhttpSettings: {path: $path, mode: "auto", host: $sni},
@@ -2599,11 +3111,43 @@ add_xray_inbound_v2() {
                 tag: $tag
             }' > "$tmp_inbound"
             ;;
+        vless-xhttp-cdn)
+            # VLESS+XHTTP+TLS+CDN 模式 - Nginx 反代 h2c，无 Reality
+            local domain=$(echo "$cfg" | jq -r '.domain // empty')
+            local internal_port=$(echo "$cfg" | jq -r '.internal_port // .port')
+            
+            # 获取完整的用户列表（包含子用户和 email，用于流量统计）
+            local clients=$(gen_xray_vless_clients "$base_protocol")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"id\":\"$uuid\",\"email\":\"default@${base_protocol}\"}]"
+            
+            jq -n \
+                --argjson port "$internal_port" \
+                --argjson clients "$clients" \
+                --arg path "$path" \
+                --arg domain "$domain" \
+                --arg tag "$inbound_tag" \
+            '{
+                port: $port,
+                listen: "127.0.0.1",
+                protocol: "vless",
+                settings: {clients: $clients, decryption: "none"},
+                streamSettings: {
+                    network: "xhttp",
+                    xhttpSettings: {path: $path, mode: "auto", host: $domain}
+                },
+                sniffing: {enabled: true, destOverride: ["http","tls"]},
+                tag: $tag
+            }' > "$tmp_inbound"
+            ;;
         vmess-ws)
+            # 获取完整的用户列表（包含子用户和 email，用于流量统计）
+            local clients=$(gen_xray_vmess_clients "$base_protocol")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"id\":\"$uuid\",\"email\":\"default@${base_protocol}\",\"alterId\":0}]"
+            
             if [[ "$has_master" == "true" ]]; then
                 jq -n \
                     --argjson port "$port" \
-                    --arg uuid "$uuid" \
+                    --argjson clients "$clients" \
                     --arg path "$path" \
                     --arg sni "$sni" \
                     --arg tag "$inbound_tag" \
@@ -2611,7 +3155,7 @@ add_xray_inbound_v2() {
                     port: $port,
                     listen: "127.0.0.1",
                     protocol: "vmess",
-                    settings: {clients: [{id: $uuid, alterId: 0, security: "auto"}]},
+                    settings: {clients: $clients},
                     streamSettings: {
                         network: "ws",
                         security: "none",
@@ -2622,7 +3166,7 @@ add_xray_inbound_v2() {
             else
                 jq -n \
                     --argjson port "$port" \
-                    --arg uuid "$uuid" \
+                    --argjson clients "$clients" \
                     --arg path "$path" \
                     --arg sni "$sni" \
                     --arg cert "$CFG/certs/server.crt" \
@@ -2633,7 +3177,7 @@ add_xray_inbound_v2() {
                     port: $port,
                     listen: $listen_addr,
                     protocol: "vmess",
-                    settings: {clients: [{id: $uuid, alterId: 0, security: "auto"}]},
+                    settings: {clients: $clients},
                     streamSettings: {
                         network: "ws",
                         security: "tls",
@@ -2648,9 +3192,13 @@ add_xray_inbound_v2() {
             fi
             ;;
         trojan)
+            # 获取完整的用户列表（包含子用户和 email，用于流量统计）
+            local clients=$(gen_xray_trojan_clients "$base_protocol")
+            [[ -z "$clients" || "$clients" == "[]" ]] && clients="[{\"password\":\"$password\",\"email\":\"default@${base_protocol}\"}]"
+            
             jq -n \
                 --argjson port "$port" \
-                --arg password "$password" \
+                --argjson clients "$clients" \
                 --arg cert "$CFG/certs/server.crt" \
                 --arg key "$CFG/certs/server.key" \
                 --argjson fallbacks "$fallbacks" \
@@ -2661,7 +3209,7 @@ add_xray_inbound_v2() {
                 listen: $listen_addr,
                 protocol: "trojan",
                 settings: {
-                    clients: [{password: $password}],
+                    clients: $clients,
                     fallbacks: $fallbacks
                 },
                 streamSettings: {
@@ -3369,9 +3917,16 @@ ask_port() {
     esac
     
     echo "" >&2
+    echo -e "  ${D}(输入 0 或 q 返回上级菜单)${NC}" >&2
     
     while true; do
         read -rp "  请输入端口 [回车使用 $recommend]: " custom_port
+        
+        # 检查退出命令
+        if [[ "$custom_port" == "0" || "$custom_port" == "q" || "$custom_port" == "Q" ]]; then
+            echo ""  # 返回空字符串表示取消
+            return 1  # 返回非0表示取消
+        fi
         
         # 如果用户直接回车，使用推荐端口
         if [[ -z "$custom_port" ]]; then
@@ -4044,7 +4599,6 @@ gen_xhttp_path() {
     fi
     echo "$path"
 }
-gen_password() { head -c 16 /dev/urandom 2>/dev/null | base64 | tr -d '/+=' | head -c 16 || printf '%s%s' $RANDOM $RANDOM | md5sum | head -c 16; }
 
 urlencode() {
     local s="$1" i c o=""
@@ -4134,6 +4688,17 @@ gen_vless_ws_link() {
     local ip_suffix=$(get_ip_suffix "$ip")
     local name="${country:+${country}-}VLESS-WS${ip_suffix:+-${ip_suffix}}"
     printf '%s\n' "vless://${uuid}@${ip}:${port}?encryption=none&security=tls&sni=${sni}&type=ws&host=${sni}&path=$(urlencode "$path")&allowInsecure=1#${name}"
+}
+
+# VLESS-WS (无TLS) 分享链接 - 用于 CF Tunnel
+gen_vless_ws_notls_link() {
+    local ip="$1" port="$2" uuid="$3" path="${4:-/}" host="${5:-}" country="${6:-}"
+    local ip_suffix=$(get_ip_suffix "$ip")
+    local name="${country:+${country}-}VLESS-WS-CF${ip_suffix:+-${ip_suffix}}"
+    # security=none 表示不使用 TLS
+    local link="vless://${uuid}@${ip}:${port}?encryption=none&security=none&type=ws&path=$(urlencode "$path")"
+    [[ -n "$host" ]] && link="${link}&host=${host}"
+    printf '%s\n' "${link}#${name}"
 }
 
 gen_vless_vision_link() {
@@ -4885,7 +5450,8 @@ setup_cert_and_nginx() {
                         _info "将使用随机 SNI (无域名模式)"
                         return 0
                     fi
-                    # 继续使用真实证书
+                    # 继续使用真实证书，标记SNI已确定，避免ask_sni_config再次询问
+                    REALITY_SNI_CONFIRMED="$CERT_DOMAIN"
                 fi
                 
                 # 读取已有的订阅配置
@@ -5023,6 +5589,14 @@ setup_cert_and_nginx() {
 ask_sni_config() {
     local default_sni="${1:-$(gen_sni)}"
     local cert_domain="${2:-}"
+    
+    # 如果 Reality 协议已在 setup_cert_and_nginx 中确定使用真实域名，直接返回
+    if [[ -n "$REALITY_SNI_CONFIRMED" ]]; then
+        _ok "使用真实域名: $REALITY_SNI_CONFIRMED" >&2
+        echo "$REALITY_SNI_CONFIRMED"
+        unset REALITY_SNI_CONFIRMED  # 清除标记
+        return 0
+    fi
     
     # 如果有证书域名，检查是否是真实证书
     if [[ -n "$cert_domain" && -f "$CFG/certs/server.crt" ]]; then
@@ -8034,6 +8608,20 @@ gen_vless_ws_server_config() {
         "gen_vless_ws_link %s $outer_port $uuid $sni $path"
     echo "server" > "$CFG/role"
 }
+
+# VLESS+WS (无TLS) 服务端配置 - 专为 CF Tunnel 设计
+gen_vless_ws_notls_server_config() {
+    local uuid="$1" port="$2" path="${3:-/vless}" host="${4:-}"
+    mkdir -p "$CFG"
+    
+    # 无需证书，直接使用外部端口
+    register_protocol "vless-ws-notls" "$(build_config \
+        uuid "$uuid" port "$port" path "$path" host "$host")"
+    _save_join_info "vless-ws-notls" "VLESS-WS-CF|%s|$port|$uuid|$path|$host" \
+        "gen_vless_ws_notls_link %s $port $uuid $path $host"
+    echo "server" > "$CFG/role"
+}
+
 
 # VMess+WS 服务端配置
 gen_vmess_ws_server_config() {
@@ -14828,6 +15416,15 @@ show_single_protocol_info() {
             echo -e "  ${Y}Loon 配置:${NC}"
             echo -e "  ${C}${country_code}-Vless-WS = VLESS, ${config_ip}, ${display_port}, \"${uuid}\", transport=ws, path=${path}, host=${sni}, udp=true, over-tls=true, sni=${sni}, skip-cert-verify=true${NC}"
             ;;
+        vless-ws-notls)
+            local host=$(echo "$cfg" | jq -r '.host // empty')
+            echo -e "  UUID: ${G}$uuid${NC}"
+            [[ -n "$path" ]] && echo -e "  Path: ${G}$path${NC}"
+            [[ -n "$host" ]] && echo -e "  Host: ${G}$host${NC}"
+            echo ""
+            echo -e "  ${Y}注意: 此协议为无 TLS 模式，专为 CF Tunnel 设计${NC}"
+            echo -e "  ${D}请配置 Cloudflare Tunnel 指向此端口${NC}"
+            ;;
         vmess-ws)
             echo -e "  UUID: ${G}$uuid${NC}"
             echo -e "  SNI: ${G}$sni${NC}"
@@ -15017,6 +15614,11 @@ show_single_protocol_info() {
             vless-ws)
                 link=$(gen_vless_ws_link "$ip_addr" "$link_port" "$uuid" "$sni" "$path" "$country_code")
                 join_code=$(echo "VLESS-WS|${ip_addr}|${link_port}|${uuid}|${sni}|${path}" | base64 -w 0)
+                ;;
+            vless-ws-notls)
+                local host=$(echo "$cfg" | jq -r '.host // empty')
+                link=$(gen_vless_ws_notls_link "$ip_addr" "$link_port" "$uuid" "$path" "$host" "$country_code")
+                join_code=$(echo "VLESS-WS-CF|${ip_addr}|${link_port}|${uuid}|${path}|${host}" | base64 -w 0)
                 ;;
             vmess-ws)
                 link=$(gen_vmess_ws_link "$ip_addr" "$link_port" "$uuid" "$sni" "$path" "$country_code")
@@ -16155,7 +16757,7 @@ do_install_server() {
     
     # 根据协议安装对应软件
     case "$protocol" in
-        vless|vless-xhttp|vless-ws|vmess-ws|vless-vision|ss2022|ss-legacy|trojan|socks)
+        vless|vless-xhttp|vless-ws|vless-ws-notls|vmess-ws|vless-vision|ss2022|ss-legacy|trojan|socks)
             install_xray || { _err "Xray 安装失败"; _pause; return 1; }
             ;;
         hy2|tuic)
@@ -16190,7 +16792,12 @@ do_install_server() {
     _info "生成配置参数..."
     
     # 使用新的智能端口选择
-    local port=$(ask_port "$protocol")
+    local port
+    port=$(ask_port "$protocol")
+    if [[ $? -ne 0 || -z "$port" ]]; then
+        _warn "已取消端口配置"
+        return 1
+    fi
     
     case "$protocol" in
         vless)
@@ -16227,104 +16834,259 @@ do_install_server() {
             gen_server_config "$uuid" "$port" "$privkey" "$pubkey" "$sid" "$final_sni"
             ;;
         vless-xhttp)
-            local uuid=$(gen_uuid) sid=$(gen_sid) path="$(gen_xhttp_path)"
-            local keys=$(xray x25519 2>/dev/null)
-            [[ -z "$keys" ]] && { _err "密钥生成失败"; _pause; return 1; }
-            local privkey=$(echo "$keys" | grep "PrivateKey:" | awk '{print $2}')
-            local pubkey=$(echo "$keys" | grep "Password:" | awk '{print $2}')
-            [[ -z "$privkey" || -z "$pubkey" ]] && { _err "密钥提取失败"; _pause; return 1; }
-            
-            # 使用统一的证书和 Nginx 配置函数
-            setup_cert_and_nginx "vless-xhttp"
-            local cert_domain="$CERT_DOMAIN"
-            
-            # 询问SNI配置
-            local final_sni=$(ask_sni_config "$(gen_sni)" "$cert_domain")
-            
+            # 选择 XHTTP 模式
             echo ""
             _line
-            echo -e "  ${C}VLESS+Reality+XHTTP 配置${NC}"
+            echo -e "  ${W}选择 XHTTP 模式${NC}"
             _line
-            echo -e "  端口: ${G}$port${NC}  UUID: ${G}${uuid:0:8}...${NC}"
-            echo -e "  SNI: ${G}$final_sni${NC}  ShortID: ${G}$sid${NC}"
-            echo -e "  Path: ${G}$path${NC}"
-            # Reality 真实域名模式时，订阅走 Reality 端口，不显示 Nginx 端口
-            if [[ -n "$CERT_DOMAIN" && "$final_sni" == "$CERT_DOMAIN" ]]; then
-                echo -e "  ${D}(订阅通过 Reality 端口访问)${NC}"
+            echo -e "  ${G}1${NC}) Reality 模式 (伪装TLS，直连使用)"
+            echo -e "  ${G}2${NC}) TLS+CDN 模式 (真实证书，可过Cloudflare CDN)"
+            echo -e "  ${G}0${NC}) 取消"
+            echo ""
+            local xhttp_mode=""
+            read -rp "  请选择 [1]: " xhttp_mode_choice
+            xhttp_mode_choice="${xhttp_mode_choice:-1}"
+            
+            case "$xhttp_mode_choice" in
+                1) xhttp_mode="reality" ;;
+                2) xhttp_mode="tls-cdn" ;;
+                0) return 0 ;;
+                *) _err "无效选择"; return 1 ;;
+            esac
+            
+            local uuid=$(gen_uuid) path="$(gen_xhttp_path)"
+            
+            if [[ "$xhttp_mode" == "reality" ]]; then
+                # Reality 模式
+                local sid=$(gen_sid)
+                local keys=$(xray x25519 2>/dev/null)
+                [[ -z "$keys" ]] && { _err "密钥生成失败"; _pause; return 1; }
+                local privkey=$(echo "$keys" | grep "PrivateKey:" | awk '{print $2}')
+                local pubkey=$(echo "$keys" | grep "Password:" | awk '{print $2}')
+                [[ -z "$privkey" || -z "$pubkey" ]] && { _err "密钥提取失败"; _pause; return 1; }
+                
+                # 使用统一的证书和 Nginx 配置函数
+                setup_cert_and_nginx "vless-xhttp"
+                local cert_domain="$CERT_DOMAIN"
+                
+                # 询问SNI配置
+                local final_sni=$(ask_sni_config "$(gen_sni)" "$cert_domain")
+                
+                echo ""
+                _line
+                echo -e "  ${C}VLESS+Reality+XHTTP 配置${NC}"
+                _line
+                echo -e "  端口: ${G}$port${NC}  UUID: ${G}${uuid:0:8}...${NC}"
+                echo -e "  SNI: ${G}$final_sni${NC}  ShortID: ${G}$sid${NC}"
+                echo -e "  Path: ${G}$path${NC}"
+                # Reality 真实域名模式时，订阅走 Reality 端口，不显示 Nginx 端口
+                if [[ -n "$CERT_DOMAIN" && "$final_sni" == "$CERT_DOMAIN" ]]; then
+                    echo -e "  ${D}(订阅通过 Reality 端口访问)${NC}"
+                fi
+                _line
+                echo ""
+                read -rp "  确认安装? [Y/n]: " confirm
+                [[ "$confirm" =~ ^[nN]$ ]] && return
+                
+                _info "生成配置..."
+                gen_vless_xhttp_server_config "$uuid" "$port" "$privkey" "$pubkey" "$sid" "$final_sni" "$path"
+            else
+                # TLS+CDN 模式
+                echo ""
+                _line
+                echo -e "  ${W}TLS+CDN 模式配置${NC}"
+                _line
+                echo -e "  ${D}此模式需要真实域名和证书${NC}"
+                echo -e "  ${D}Xray 监听本地，Nginx 反代并处理 TLS${NC}"
+                echo -e "  ${D}客户端通过 Cloudflare CDN (小云朵) 访问${NC}"
+                echo ""
+                
+                # 获取域名和证书
+                local domain=""
+                while [[ -z "$domain" ]]; do
+                    read -rp "  请输入域名 (必须已在 Cloudflare 托管): " domain
+                    [[ -z "$domain" ]] && _err "域名不能为空"
+                done
+                
+                # 检查证书
+                local cert_dir="$CFG/certs"
+                local cert_file="$cert_dir/server.crt"
+                local key_file="$cert_dir/server.key"
+                
+                if [[ -f "$cert_file" && -f "$key_file" ]]; then
+                    local existing_domain=$(cat "$CFG/cert_domain" 2>/dev/null)
+                    if [[ "$existing_domain" == "$domain" ]]; then
+                        _ok "使用现有证书: $domain"
+                    else
+                        _warn "现有证书域名 ($existing_domain) 与输入域名 ($domain) 不匹配"
+                        read -rp "  是否重新申请证书? [Y/n]: " reapply
+                        if [[ ! "$reapply" =~ ^[nN]$ ]]; then
+                            _apply_cert "$domain" || { _err "证书申请失败"; return 1; }
+                        fi
+                    fi
+                else
+                    _info "申请证书..."
+                    _apply_cert "$domain" || { _err "证书申请失败"; return 1; }
+                fi
+                
+                # 选择内部监听端口
+                local internal_port=18080
+                echo ""
+                read -rp "  XHTTP 内部监听端口 [$internal_port]: " _ip
+                [[ -n "$_ip" ]] && internal_port="$_ip"
+                
+                echo ""
+                _line
+                echo -e "  ${C}VLESS+XHTTP+TLS+CDN 配置${NC}"
+                _line
+                echo -e "  域名: ${G}$domain${NC}"
+                echo -e "  外部端口: ${G}443${NC} (Nginx TLS)"
+                echo -e "  内部端口: ${G}$internal_port${NC} (Xray h2c)"
+                echo -e "  Path: ${G}$path${NC}"
+                echo -e "  UUID: ${G}${uuid:0:8}...${NC}"
+                echo ""
+                echo -e "  ${Y}请确保 Cloudflare 中该域名已开启小云朵代理${NC}"
+                _line
+                echo ""
+                read -rp "  确认安装? [Y/n]: " confirm
+                [[ "$confirm" =~ ^[nN]$ ]] && return
+                
+                _info "生成配置..."
+                gen_vless_xhttp_tls_cdn_config "$uuid" "$internal_port" "$path" "$domain"
+                
+                # 切换协议为 vless-xhttp-cdn (用于后续显示配置信息)
+                protocol="vless-xhttp-cdn"
+                SELECTED_PROTOCOL="vless-xhttp-cdn"
+                
+                # 配置 Nginx 反代 XHTTP (h2c)
+                _info "配置 Nginx..."
+                _setup_nginx_xhttp_proxy "$domain" "$internal_port" "$path"
+                
+                # 保存配置到数据库 (使用 443 作为对外端口)
+                echo "$domain" > "$CFG/cert_domain"
             fi
-            _line
-            echo ""
-            read -rp "  确认安装? [Y/n]: " confirm
-            [[ "$confirm" =~ ^[nN]$ ]] && return
-            
-            _info "生成配置..."
-            gen_vless_xhttp_server_config "$uuid" "$port" "$privkey" "$pubkey" "$sid" "$final_sni" "$path"
             ;;
         vless-ws)
-            local uuid=$(gen_uuid) path="/vless"
+            # 子菜单：选择 TLS 模式或 CF Tunnel 模式
+            echo ""
+            _line
+            echo -e "  ${W}VLESS-WS 模式选择${NC}"
+            _line
+            _item "1" "TLS 模式 ${D}(标准模式, 需要证书)${NC}"
+            _item "2" "CF Tunnel 模式 ${D}(无TLS, 配合 Cloudflare Tunnel)${NC}"
+            _item "0" "返回"
+            echo ""
             
-            # 检查是否有主协议（用于回落）
-            local master_domain=""
-            local master_protocol=""
-            if db_exists "xray" "vless"; then
-                master_domain=$(db_get_field "xray" "vless" "sni")
-                master_protocol="vless"
-            elif db_exists "xray" "vless-vision"; then
-                master_domain=$(db_get_field "xray" "vless-vision" "sni")
-                master_protocol="vless-vision"
-            elif db_exists "xray" "trojan"; then
-                master_domain=$(db_get_field "xray" "trojan" "sni")
-                master_protocol="trojan"
-            fi
+            local ws_mode=""
+            read -rp "  选择模式 [1]: " ws_mode
+            ws_mode=${ws_mode:-1}
             
-            # 检查证书域名
-            local cert_domain=""
-            if [[ -f "$CFG/cert_domain" ]]; then
-                cert_domain=$(cat "$CFG/cert_domain")
-            fi
-            
-            local final_sni=""
-            # 如果是回落子协议，强制使用证书域名（必须和 TLS 证书匹配）
-            if [[ -n "$master_protocol" ]]; then
-                if [[ -n "$cert_domain" ]]; then
-                    final_sni="$cert_domain"
+            case "$ws_mode" in
+                0) return ;;
+                2)
+                    # 转到 vless-ws-notls 安装
+                    protocol="vless-ws-notls"
+                    local uuid=$(gen_uuid)
+                    local path="/vless"
+                    local host=""
+                    
                     echo ""
-                    _warn "作为回落子协议，SNI 必须与主协议证书域名一致"
-                    _ok "自动使用证书域名: $cert_domain"
-                elif [[ -n "$master_domain" ]]; then
-                    final_sni="$master_domain"
-                    _ok "自动使用主协议 SNI: $master_domain"
+                    _info "VLESS-WS-CF 协议设计用于 Cloudflare Tunnel"
+                    _info "服务器端不需要 TLS，由 CF Tunnel 提供加密"
+                    echo ""
+                    
+                    read -rp "  WS Path [回车默认 $path]: " _p
+                    [[ -n "$_p" ]] && path="$_p"
+                    [[ "$path" != /* ]] && path="/$path"
+                    
+                    read -rp "  Host 头 (可选，用于 CF Tunnel): " host
+                    
+                    echo ""
+                    _line
+                    echo -e "  ${C}VLESS-WS-CF 配置 (无TLS)${NC}"
+                    _line
+                    echo -e "  端口: ${G}$port${NC}  UUID: ${G}${uuid:0:8}...${NC}"
+                    echo -e "  Path: ${G}$path${NC}"
+                    [[ -n "$host" ]] && echo -e "  Host: ${G}$host${NC}"
+                    echo -e "  ${Y}注意: 请配置 CF Tunnel 指向此端口${NC}"
+                    _line
+                    echo ""
+                    read -rp "  确认安装? [Y/n]: " confirm
+                    [[ "$confirm" =~ ^[nN]$ ]] && return
+                    
+                    _info "生成配置..."
+                    gen_vless_ws_notls_server_config "$uuid" "$port" "$path" "$host"
+                    ;;  # 结束 CF Tunnel 分支，进入外层 vless-ws case 结束
+            esac
+            
+            # 只有 TLS 模式（ws_mode=1或空）才执行以下流程
+            if [[ "$ws_mode" != "2" ]]; then
+                # TLS 模式继续原有流程
+                local uuid=$(gen_uuid) path="/vless"
+                
+                # 检查是否有主协议（用于回落）
+                local master_domain=""
+                local master_protocol=""
+                if db_exists "xray" "vless"; then
+                    master_domain=$(db_get_field "xray" "vless" "sni")
+                    master_protocol="vless"
+                elif db_exists "xray" "vless-vision"; then
+                    master_domain=$(db_get_field "xray" "vless-vision" "sni")
+                    master_protocol="vless-vision"
+                elif db_exists "xray" "trojan"; then
+                    master_domain=$(db_get_field "xray" "trojan" "sni")
+                    master_protocol="trojan"
+                fi
+                
+                # 检查证书域名
+                local cert_domain=""
+                if [[ -f "$CFG/cert_domain" ]]; then
+                    cert_domain=$(cat "$CFG/cert_domain")
+                fi
+                
+                local final_sni=""
+                # 如果是回落子协议，强制使用证书域名（必须和 TLS 证书匹配）
+                if [[ -n "$master_protocol" ]]; then
+                    if [[ -n "$cert_domain" ]]; then
+                        final_sni="$cert_domain"
+                        echo ""
+                        _warn "作为回落子协议，SNI 必须与主协议证书域名一致"
+                        _ok "自动使用证书域名: $cert_domain"
+                    elif [[ -n "$master_domain" ]]; then
+                        final_sni="$master_domain"
+                        _ok "自动使用主协议 SNI: $master_domain"
+                    else
+                        # 使用统一的证书和 Nginx 配置函数
+                        setup_cert_and_nginx "vless-ws"
+                        cert_domain="$CERT_DOMAIN"
+                        final_sni=$(ask_sni_config "$(gen_sni)" "$cert_domain")
+                    fi
                 else
-                    # 使用统一的证书和 Nginx 配置函数
+                    # 独立安装，使用统一的证书和 Nginx 配置函数
                     setup_cert_and_nginx "vless-ws"
                     cert_domain="$CERT_DOMAIN"
                     final_sni=$(ask_sni_config "$(gen_sni)" "$cert_domain")
                 fi
-            else
-                # 独立安装，使用统一的证书和 Nginx 配置函数
-                setup_cert_and_nginx "vless-ws"
-                cert_domain="$CERT_DOMAIN"
-                final_sni=$(ask_sni_config "$(gen_sni)" "$cert_domain")
+                
+                read -rp "  WS Path [回车默认 $path]: " _p
+                [[ -n "$_p" ]] && path="$_p"
+                [[ "$path" != /* ]] && path="/$path"
+                
+                echo ""
+                _line
+                echo -e "  ${C}VLESS+WS+TLS 配置${NC}"
+                _line
+                echo -e "  端口: ${G}$port${NC}  UUID: ${G}${uuid:0:8}...${NC}"
+                echo -e "  SNI: ${G}$final_sni${NC}  Path: ${G}$path${NC}"
+                [[ -n "$cert_domain" ]] && echo -e "  订阅端口: ${G}${NGINX_PORT:-8443}${NC}"
+                _line
+                echo ""
+                read -rp "  确认安装? [Y/n]: " confirm
+                [[ "$confirm" =~ ^[nN]$ ]] && return
+                
+                _info "生成配置..."
+                gen_vless_ws_server_config "$uuid" "$port" "$final_sni" "$path"
             fi
-            
-            read -rp "  WS Path [回车默认 $path]: " _p
-            [[ -n "$_p" ]] && path="$_p"
-            [[ "$path" != /* ]] && path="/$path"
-            
-            echo ""
-            _line
-            echo -e "  ${C}VLESS+WS+TLS 配置${NC}"
-            _line
-            echo -e "  端口: ${G}$port${NC}  UUID: ${G}${uuid:0:8}...${NC}"
-            echo -e "  SNI: ${G}$final_sni${NC}  Path: ${G}$path${NC}"
-            [[ -n "$cert_domain" ]] && echo -e "  订阅端口: ${G}${NGINX_PORT:-8443}${NC}"
-            _line
-            echo ""
-            read -rp "  确认安装? [Y/n]: " confirm
-            [[ "$confirm" =~ ^[nN]$ ]] && return
-            
-            _info "生成配置..."
-            gen_vless_ws_server_config "$uuid" "$port" "$final_sni" "$path"
             ;;
         vmess-ws)
             local uuid=$(gen_uuid)
@@ -19561,7 +20323,7 @@ create_quick_tunnel() {
     echo -e "  ${Y}      但域名每次重启会变化，仅适合临时测试${NC}"
     echo ""
     
-    # 列出可用的 WS 协议
+    # 列出可用的 CDN 协议
     local ws_protocols=""
     local idx=1
     local proto_array=()
@@ -19580,9 +20342,16 @@ create_quick_tunnel() {
         ((idx++))
     fi
     
+    if db_exists "xray" "vless-ws-notls"; then
+        local port=$(db_get_field "xray" "vless-ws-notls" "port")
+        echo -e "  ${G}$idx${NC}) VLESS-WS-CF (端口: $port, 无TLS)"
+        proto_array+=("vless-ws-notls:$port")
+        ((idx++))
+    fi
+    
     if [[ ${#proto_array[@]} -eq 0 ]]; then
-        _warn "未找到支持的 WebSocket 协议"
-        echo -e "  ${D}快速隧道仅支持: VLESS-WS, VMess-WS${NC}"
+        _warn "未找到支持 CDN 穿透的协议"
+        echo -e "  ${D}快速隧道支持: VLESS-WS, VMess-WS, VLESS-WS-CF${NC}"
         _pause
         return 1
     fi
@@ -19668,8 +20437,8 @@ add_protocol_to_tunnel() {
     echo -e "  当前隧道: ${G}$tunnel_name${NC}"
     echo ""
     
-    # 列出可用的 WS 协议
-    echo -e "  ${W}选择要暴露的协议 (仅支持 WebSocket):${NC}"
+    # 列出可用的 CDN 协议 (WebSocket / XHTTP)
+    echo -e "  ${W}选择要暴露的协议:${NC}"
     echo ""
     
     local ws_protocols=""
@@ -19692,12 +20461,21 @@ add_protocol_to_tunnel() {
         ((idx++))
     fi
     
+    if db_exists "xray" "vless-ws-notls"; then
+        local port=$(db_get_field "xray" "vless-ws-notls" "port")
+        local path=$(db_get_field "xray" "vless-ws-notls" "path")
+        echo -e "  ${G}$idx${NC}) VLESS-WS-CF (端口: $port, 路径: ${path:-/vless}, 无TLS)"
+        proto_array+=("vless-ws-notls:$port:${path:-/vless}")
+        ((idx++))
+    fi
+    
     if [[ ${#proto_array[@]} -eq 0 ]]; then
-        _warn "未找到支持的 WebSocket 协议"
+        _warn "未找到支持 CDN 穿透的协议"
         echo ""
-        echo -e "  ${D}Cloudflare Tunnel 仅支持以下协议:${NC}"
-        echo -e "  ${D}  - VLESS-WS${NC}"
-        echo -e "  ${D}  - VMess-WS${NC}"
+        echo -e "  ${D}Cloudflare Tunnel 支持以下协议:${NC}"
+        echo -e "  ${D}  - VLESS-WS (WebSocket)${NC}"
+        echo -e "  ${D}  - VMess-WS (WebSocket)${NC}"
+        echo -e "  ${D}  - VLESS-WS-CF (无TLS, 专为 CF Tunnel 设计)${NC}"
         echo ""
         echo -e "  ${D}请先安装上述协议${NC}"
         _pause
@@ -19874,6 +20652,34 @@ EOF
                     echo -e "  $share_link"
                 fi
                 ;;
+            "vless-xhttp")
+                uuid=$(db_get_field "xray" "vless-xhttp" "uuid")
+                path=$(db_get_field "xray" "vless-xhttp" "path")
+                path="${path:-/xhttp}"
+                
+                if [[ -n "$uuid" ]]; then
+                    local encoded_path=$(echo "$path" | sed 's/\//%2F/g')
+                    # XHTTP 分享链接: type=xhttp, alpn=h2
+                    local share_link="vless://${uuid}@${hostname}:443?encryption=none&security=tls&sni=${hostname}&type=xhttp&host=${hostname}&path=${encoded_path}&mode=auto#CF-VLESS-XHTTP"
+                    
+                    echo -e "  ${C}分享链接:${NC}"
+                    echo -e "  $share_link"
+                fi
+                ;;
+            "vless-ws-notls")
+                uuid=$(db_get_field "xray" "vless-ws-notls" "uuid")
+                path=$(db_get_field "xray" "vless-ws-notls" "path")
+                path="${path:-/vless}"
+                
+                if [[ -n "$uuid" ]]; then
+                    local encoded_path=$(echo "$path" | sed 's/\//%2F/g')
+                    # CF Tunnel 提供 TLS，所以分享链接使用 TLS
+                    local share_link="vless://${uuid}@${hostname}:443?encryption=none&security=tls&sni=${hostname}&type=ws&host=${hostname}&path=${encoded_path}#CF-VLESS-WS"
+                    
+                    echo -e "  ${C}分享链接:${NC}"
+                    echo -e "  $share_link"
+                fi
+                ;;
         esac
         
         echo ""
@@ -20036,6 +20842,9 @@ show_tunnel_status() {
                         echo -e "  ${C}分享链接:${NC}"
                         echo -e "  $share_link"
                         echo ""
+                        echo -e "  ${C}二维码:${NC}"
+                        echo -e "  $(gen_qr "$share_link")"
+                        echo ""
                         echo -e "  ${D}客户端配置: 地址=${hostname}, 端口=443, TLS=开启${NC}"
                     fi
                     ;;
@@ -20052,6 +20861,28 @@ show_tunnel_status() {
                         
                         echo -e "  ${C}分享链接:${NC}"
                         echo -e "  $share_link"
+                        echo ""
+                        echo -e "  ${C}二维码:${NC}"
+                        echo -e "  $(gen_qr "$share_link")"
+                        echo ""
+                        echo -e "  ${D}客户端配置: 地址=${hostname}, 端口=443, TLS=开启${NC}"
+                    fi
+                    ;;
+                "vless-ws-notls")
+                    uuid=$(db_get_field "xray" "vless-ws-notls" "uuid")
+                    path=$(db_get_field "xray" "vless-ws-notls" "path")
+                    path="${path:-/vless}"
+                    
+                    if [[ -n "$uuid" ]]; then
+                        local encoded_path=$(echo "$path" | sed 's/\//%2F/g')
+                        # CF Tunnel 提供 TLS，所以分享链接使用 TLS
+                        local share_link="vless://${uuid}@${hostname}:443?encryption=none&security=tls&sni=${hostname}&type=ws&host=${hostname}&path=${encoded_path}#CF-VLESS-WS"
+                        
+                        echo -e "  ${C}分享链接:${NC}"
+                        echo -e "  $share_link"
+                        echo ""
+                        echo -e "  ${C}二维码:${NC}"
+                        echo -e "  $(gen_qr "$share_link")"
                         echo ""
                         echo -e "  ${D}客户端配置: 地址=${hostname}, 端口=443, TLS=开启${NC}"
                     fi
@@ -20533,18 +21364,19 @@ _show_users_list() {
         return
     fi
     
-    printf "  ${W}%-12s %-10s %-12s %-12s %-6s${NC}\n" "用户名" "已用流量" "配额" "使用率" "状态"
+    printf "  ${W}%-10s %-9s %-10s %-8s %-4s %-10s${NC}\n" "用户名" "已用" "配额" "使用率" "状态" "路由"
     _line
     
     local user_list=()
-    while IFS='|' read -r name uuid used quota enabled port; do
+    while IFS='|' read -r name uuid used quota enabled port routing; do
         [[ -z "$name" ]] && continue
         user_list+=("$name")
         
         local used_fmt=$(format_bytes "$used")
-        local quota_fmt="无限制"
+        local quota_fmt="无限"
         local percent="-"
         local status_icon="${G}●${NC}"
+        local routing_fmt=$(_format_user_routing "$routing")
         
         if [[ "$quota" -gt 0 ]]; then
             quota_fmt=$(format_bytes "$quota")
@@ -20562,7 +21394,7 @@ _show_users_list() {
         
         [[ "$enabled" != "true" ]] && status_icon="${R}○${NC}"
         
-        printf "  %-12s %-10s %-12s %-12s %b\n" "$name" "$used_fmt" "$quota_fmt" "$percent" "$status_icon"
+        printf "  %-10s %-9s %-10s %-8s %b  %-10s\n" "$name" "$used_fmt" "$quota_fmt" "$percent" "$status_icon" "$routing_fmt"
     done <<< "$stats"
     
     _line
@@ -20574,7 +21406,15 @@ _gen_user_share_link() {
     
     # 获取协议配置
     local cfg=$(db_get "$core" "$proto")
-    [[ -z "$cfg" ]] && return
+    [[ -z "$cfg" || "$cfg" == "null" ]] && return
+    
+    # 检查是否为多端口数组格式
+    local is_array=false
+    if echo "$cfg" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        is_array=true
+        # 多端口：从第一个端口实例获取配置
+        cfg=$(echo "$cfg" | jq '.[0]')
+    fi
     
     # 提取配置字段
     local port=$(echo "$cfg" | jq -r '.port // empty')
@@ -20595,11 +21435,26 @@ _gen_user_share_link() {
     local display_port="$port"
     if [[ "$proto" == "vless-ws" || "$proto" == "vmess-ws" ]]; then
         if db_exists "xray" "vless-vision"; then
-            display_port=$(db_get_field "xray" "vless-vision" "port")
+            local vision_cfg=$(db_get "xray" "vless-vision")
+            if echo "$vision_cfg" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                display_port=$(echo "$vision_cfg" | jq -r '.[0].port // empty')
+            else
+                display_port=$(echo "$vision_cfg" | jq -r '.port // empty')
+            fi
         elif db_exists "xray" "trojan"; then
-            display_port=$(db_get_field "xray" "trojan" "port")
+            local trojan_cfg=$(db_get "xray" "trojan")
+            if echo "$trojan_cfg" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                display_port=$(echo "$trojan_cfg" | jq -r '.[0].port // empty')
+            else
+                display_port=$(echo "$trojan_cfg" | jq -r '.port // empty')
+            fi
         elif db_exists "xray" "vless"; then
-            display_port=$(db_get_field "xray" "vless" "port")
+            local vless_cfg=$(db_get "xray" "vless")
+            if echo "$vless_cfg" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                display_port=$(echo "$vless_cfg" | jq -r '.[0].port // empty')
+            else
+                display_port=$(echo "$vless_cfg" | jq -r '.port // empty')
+            fi
         fi
         [[ -z "$display_port" ]] && display_port="$port"
     fi
@@ -20651,7 +21506,7 @@ _show_user_share_links() {
         local uuids=()
         local idx=1
         
-        while IFS='|' read -r name uuid used quota enabled port; do
+        while IFS='|' read -r name uuid used quota enabled port routing; do
             [[ -z "$name" ]] && continue
             users+=("$name")
             uuids+=("$uuid")
@@ -20719,6 +21574,151 @@ _show_user_share_links() {
     done
 }
 
+# 用户路由选择函数
+# 用法: _select_user_routing [当前路由值]
+# 设置全局变量 SELECTED_ROUTING 为选择的路由值
+_select_user_routing() {
+    local current_routing="${1:-}"
+    SELECTED_ROUTING=""
+    
+    echo ""
+    _line
+    echo -e "  ${W}选择用户路由${NC}"
+    echo -e "  ${D}用户级路由优先于全局分流规则${NC}"
+    _line
+    
+    local idx=1
+    local options=()
+    
+    # 选项1: 使用全局规则
+    echo -e "  ${G}1${NC}) 使用全局规则 (默认)"
+    options+=("")
+    ((idx++))
+    
+    # 选项2: 直连
+    echo -e "  ${G}$idx${NC}) 直连"
+    options+=("direct")
+    ((idx++))
+    
+    # 选项3: WARP (仅当已安装时显示)
+    if warp_status &>/dev/null || [[ -f "/usr/local/bin/warp-go" ]] || command -v warp-cli &>/dev/null; then
+        echo -e "  ${G}$idx${NC}) WARP 代理"
+        options+=("warp")
+        ((idx++))
+    fi
+    
+    # 选项N: 链式代理节点
+    if [[ -f "$DB_FILE" ]]; then
+        local chain_nodes=$(jq -r '.chain_proxy.nodes[]?.name // empty' "$DB_FILE" 2>/dev/null)
+        if [[ -n "$chain_nodes" ]]; then
+            echo -e "  ${D}──链式代理节点──${NC}"
+            while IFS= read -r node; do
+                [[ -z "$node" ]] && continue
+                echo -e "  ${G}$idx${NC}) 链路→$node"
+                options+=("chain:$node")
+                ((idx++))
+            done <<< "$chain_nodes"
+        fi
+    fi
+    
+    # 选项M: 负载均衡组
+    if [[ -f "$DB_FILE" ]]; then
+        local balancers=$(jq -r '.balancer_groups[]?.name // empty' "$DB_FILE" 2>/dev/null)
+        if [[ -n "$balancers" ]]; then
+            echo -e "  ${D}──负载均衡组──${NC}"
+            while IFS= read -r group; do
+                [[ -z "$group" ]] && continue
+                echo -e "  ${G}$idx${NC}) 负载→$group"
+                options+=("balancer:$group")
+                ((idx++))
+            done <<< "$balancers"
+        fi
+    fi
+    
+    echo -e "  ${G}0${NC}) 取消"
+    _line
+    
+    local max=$((idx-1))
+    while true; do
+        read -rp "  请选择 [0-$max]: " choice
+        [[ "$choice" == "0" ]] && return 1
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "$max" ]]; then
+            SELECTED_ROUTING="${options[$((choice-1))]}"
+            
+            # 如果选择 WARP 但未安装，提示安装
+            if [[ "$SELECTED_ROUTING" == "warp" ]]; then
+                if ! warp_status &>/dev/null && [[ ! -f "/usr/local/bin/warp-go" ]] && ! command -v warp-cli &>/dev/null; then
+                    _warn "WARP 未安装"
+                    read -rp "  是否现在安装 WARP? [Y/n]: " install_warp
+                    if [[ ! "$install_warp" =~ ^[nN]$ ]]; then
+                        install_warp_go
+                        if ! warp_status &>/dev/null; then
+                            _err "WARP 安装失败，请稍后重试"
+                            return 1
+                        fi
+                    else
+                        _err "已取消"
+                        return 1
+                    fi
+                fi
+            fi
+            
+            return 0
+        fi
+        _err "无效选择"
+    done
+}
+
+# 修改用户路由
+_set_user_routing() {
+    local core="$1" proto="$2"
+    local proto_name=$(get_protocol_name "$proto")
+    
+    local users=$(db_list_users "$core" "$proto")
+    [[ -z "$users" ]] && { _err "没有用户"; return; }
+    
+    echo ""
+    _line
+    echo -e "  ${W}修改用户路由 - $proto_name${NC}"
+    _line
+    
+    local i=1
+    local user_array=()
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+        local current_routing=$(db_get_user_routing "$core" "$proto" "$user")
+        local routing_fmt=$(_format_user_routing "$current_routing")
+        _item "$i" "$user ${D}(当前: $routing_fmt)${NC}"
+        user_array+=("$user")
+        ((i++))
+    done <<< "$users"
+    
+    _item "0" "返回"
+    _line
+    
+    local max=$((i-1))
+    while true; do
+        read -rp "  选择用户 [0-$max]: " choice
+        [[ "$choice" == "0" ]] && return
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "$max" ]]; then
+            local name="${user_array[$((choice-1))]}"
+            local current=$(db_get_user_routing "$core" "$proto" "$name")
+            
+            if _select_user_routing "$current"; then
+                if db_set_user_routing "$core" "$proto" "$name" "$SELECTED_ROUTING"; then
+                    local new_fmt=$(_format_user_routing "$SELECTED_ROUTING")
+                    _ok "用户 $name 路由已设置为: $new_fmt"
+                else
+                    _err "设置失败"
+                fi
+            fi
+            return
+        fi
+        _err "无效选择"
+    done
+}
+
 # 添加用户
 _add_user() {
     local core="$1" proto="$2"
@@ -20771,12 +21771,24 @@ _add_user() {
         _err "请输入有效数字"
     done
     
+    # 选择路由 (可选)
+    local user_routing=""
+    echo ""
+    read -rp "  是否为此用户配置专属路由? [y/N]: " config_routing
+    if [[ "$config_routing" =~ ^[yY]$ ]]; then
+        if _select_user_routing; then
+            user_routing="$SELECTED_ROUTING"
+        fi
+    fi
+    
     # 确认
+    local routing_display=$(_format_user_routing "$user_routing")
     echo ""
     _line
     echo -e "  用户名: ${G}$name${NC}"
     echo -e "  凭证: ${G}${uuid:0:16}...${NC}"
     echo -e "  配额: ${G}${quota_gb:-无限制} GB${NC}"
+    echo -e "  路由: ${G}$routing_display${NC}"
     _line
     
     read -rp "  确认添加? [Y/n]: " confirm
@@ -20785,6 +21797,12 @@ _add_user() {
     # 添加到数据库
     if db_add_user "$core" "$proto" "$name" "$uuid" "$quota_gb"; then
         _ok "用户 $name 添加成功"
+        
+        # 如果有自定义路由，设置路由
+        if [[ -n "$user_routing" ]]; then
+            db_set_user_routing "$core" "$proto" "$name" "$user_routing"
+            _ok "路由配置: $routing_display"
+        fi
         
         # 重新生成配置
         _info "更新配置..."
@@ -21029,7 +22047,7 @@ _toggle_user() {
 }
 
 # 重新生成配置 (添加/删除用户后调用)
-# 更新 Xray/Sing-box 配置文件中的用户列表并重载服务
+# 更新 Xray/Sing-box 配置文件中的用户列表、用户级路由规则、链式代理和负载均衡并重载服务
 _regenerate_config() {
     local core="$1" proto="$2"
     local config_file=""
@@ -21037,7 +22055,7 @@ _regenerate_config() {
     
     # 确定配置文件路径和服务名称
     if [[ "$core" == "xray" ]]; then
-        config_file="$CFG/xray/config.json"
+        config_file="$CFG/config.json"
         service_name="vless-reality"
     elif [[ "$core" == "singbox" ]]; then
         config_file="$CFG/singbox/config.json"
@@ -21050,37 +22068,215 @@ _regenerate_config() {
         return 0
     fi
     
-    # 从数据库读取用户列表并更新配置文件
-    local users_json=""
+    # 从数据库读取用户列表
     local db_users=$(db_get_field "$core" "$proto" "users")
+    local users_json=""
+    local xray_user_rules="[]"
+    local xray_balancer_rules="[]"
+    local needed_chain_nodes=""
+    local needed_balancer_groups=""
     
     if [[ -n "$db_users" && "$db_users" != "null" ]]; then
         # 有用户列表，转换为 Xray 格式的 clients 数组
-        users_json=$(echo "$db_users" | jq -c '[.[] | {id: .uuid, email: .name, flow: "xtls-rprx-vision"}]' 2>/dev/null)
+        # email 格式为 用户名@协议，用于流量统计
+        users_json=$(echo "$db_users" | jq -c --arg proto "$proto" '[.[] | select(.enabled == true) | {id: .uuid, email: (.name + "@" + $proto), flow: "xtls-rprx-vision"}]' 2>/dev/null)
+        
+        # 生成用户级路由规则
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            local user_name=$(echo "$line" | jq -r '.name')
+            local user_routing=$(echo "$line" | jq -r '.routing // ""')
+            
+            [[ -z "$user_name" || -z "$user_routing" ]] && continue
+            
+            # user 字段需要匹配 clients 中的 email 格式：用户名@协议
+            local user_email="${user_name}@${proto}"
+            
+            case "$user_routing" in
+                direct)
+                    xray_user_rules=$(echo "$xray_user_rules" | jq --arg user "$user_email" \
+                        '. + [{"type": "field", "user": [$user], "outboundTag": "direct"}]')
+                    ;;
+                warp)
+                    xray_user_rules=$(echo "$xray_user_rules" | jq --arg user "$user_email" \
+                        '. + [{"type": "field", "user": [$user], "outboundTag": "warp"}]')
+                    ;;
+                chain:*)
+                    local node_name="${user_routing#chain:}"
+                    xray_user_rules=$(echo "$xray_user_rules" | jq --arg user "$user_email" --arg tag "proxy-${node_name}" \
+                        '. + [{"type": "field", "user": [$user], "outboundTag": $tag}]')
+                    needed_chain_nodes="$needed_chain_nodes $node_name"
+                    ;;
+                balancer:*)
+                    local group_name="${user_routing#balancer:}"
+                    # 负载均衡使用 balancerTag 而不是 outboundTag
+                    xray_balancer_rules=$(echo "$xray_balancer_rules" | jq --arg user "$user_email" --arg tag "$group_name" \
+                        '. + [{"type": "field", "user": [$user], "balancerTag": $tag}]')
+                    needed_balancer_groups="$needed_balancer_groups $group_name"
+                    ;;
+            esac
+        done < <(echo "$db_users" | jq -c '.[] | select(.enabled == true and .routing != null and .routing != "")')
     else
         # 使用默认 UUID
         local default_uuid=$(db_get_field "$core" "$proto" "uuid")
         if [[ -n "$default_uuid" ]]; then
-            users_json="[{\"id\": \"$default_uuid\", \"email\": \"default\", \"flow\": \"xtls-rprx-vision\"}]"
+            users_json="[{\"id\": \"$default_uuid\", \"email\": \"default@${proto}\", \"flow\": \"xtls-rprx-vision\"}]"
         fi
     fi
     
-    # 更新配置文件中的 clients 数组
+    # 从数据库读取链式代理节点配置
+    local chain_outbounds="[]"
+    if [[ -n "$needed_chain_nodes" && -f "$DB_FILE" ]]; then
+        for node_name in $needed_chain_nodes; do
+            local node_config=$(jq -r --arg n "$node_name" '.chain_proxy.nodes[] | select(.name == $n)' "$DB_FILE" 2>/dev/null)
+            if [[ -n "$node_config" ]]; then
+                local node_type=$(echo "$node_config" | jq -r '.type')
+                local server=$(echo "$node_config" | jq -r '.server')
+                local port=$(echo "$node_config" | jq -r '.port')
+                local username=$(echo "$node_config" | jq -r '.username // ""')
+                local password=$(echo "$node_config" | jq -r '.password // ""')
+                
+                if [[ "$node_type" == "socks" ]]; then
+                    local outbound="{\"tag\": \"proxy-${node_name}\", \"protocol\": \"socks\", \"settings\": {\"servers\": [{\"address\": \"$server\", \"port\": $port"
+                    if [[ -n "$username" && -n "$password" ]]; then
+                        outbound="$outbound, \"users\": [{\"user\": \"$username\", \"pass\": \"$password\"}]"
+                    fi
+                    outbound="$outbound}]}}"
+                    chain_outbounds=$(echo "$chain_outbounds" | jq --argjson ob "$outbound" '. + [$ob]')
+                fi
+            fi
+        done
+    fi
+    
+    # 从数据库读取负载均衡组配置
+    local xray_balancers="[]"
+    if [[ -n "$needed_balancer_groups" && -f "$DB_FILE" ]]; then
+        for group_name in $needed_balancer_groups; do
+            local group_config=$(jq -r --arg n "$group_name" '.balancer_groups[] | select(.name == $n)' "$DB_FILE" 2>/dev/null)
+            if [[ -n "$group_config" ]]; then
+                local strategy=$(echo "$group_config" | jq -r '.strategy // "random"')
+                local nodes=$(echo "$group_config" | jq -r '.nodes[]' 2>/dev/null)
+                
+                # 构建 selector 列表（每个节点对应一个 outbound tag）
+                local selectors="[]"
+                for node in $nodes; do
+                    selectors=$(echo "$selectors" | jq --arg s "proxy-${node}" '. + [$s]')
+                    # 确保这些节点也被添加到 chain_outbounds
+                    needed_chain_nodes="$needed_chain_nodes $node"
+                done
+                
+                # 构建 balancer
+                local balancer="{\"tag\": \"$group_name\", \"selector\": $selectors, \"strategy\": {\"type\": \"$strategy\"}}"
+                xray_balancers=$(echo "$xray_balancers" | jq --argjson b "$balancer" '. + [$b]')
+            fi
+        done
+        
+        # 重新生成需要的链式代理节点 outbounds
+        chain_outbounds="[]"
+        for node_name in $needed_chain_nodes; do
+            # 检查是否已添加
+            local exists=$(echo "$chain_outbounds" | jq --arg t "proxy-${node_name}" '[.[] | select(.tag == $t)] | length')
+            [[ "$exists" != "0" ]] && continue
+            
+            local node_config=$(jq -r --arg n "$node_name" '.chain_proxy.nodes[] | select(.name == $n)' "$DB_FILE" 2>/dev/null)
+            if [[ -n "$node_config" ]]; then
+                local node_type=$(echo "$node_config" | jq -r '.type')
+                local server=$(echo "$node_config" | jq -r '.server')
+                local port=$(echo "$node_config" | jq -r '.port')
+                local username=$(echo "$node_config" | jq -r '.username // ""')
+                local password=$(echo "$node_config" | jq -r '.password // ""')
+                
+                if [[ "$node_type" == "socks" ]]; then
+                    local outbound="{\"tag\": \"proxy-${node_name}\", \"protocol\": \"socks\", \"settings\": {\"servers\": [{\"address\": \"$server\", \"port\": $port"
+                    if [[ -n "$username" && -n "$password" ]]; then
+                        outbound="$outbound, \"users\": [{\"user\": \"$username\", \"pass\": \"$password\"}]"
+                    fi
+                    outbound="$outbound}]}}"
+                    chain_outbounds=$(echo "$chain_outbounds" | jq --argjson ob "$outbound" '. + [$ob]')
+                fi
+            fi
+        done
+    fi
+    
+    # 合并 outboundTag 规则和 balancerTag 规则
+    local all_user_rules=$(echo "$xray_user_rules" | jq --argjson br "$xray_balancer_rules" '. + $br')
+    
+    # 更新配置文件
     if [[ -n "$users_json" ]]; then
         local tmp=$(mktemp)
-        if jq --argjson clients "$users_json" '
-            .inbounds[0].settings.clients = $clients
+        
+        # 使用 jq 更新配置
+        if jq --argjson clients "$users_json" \
+              --argjson user_rules "$all_user_rules" \
+              --argjson chain_obs "$chain_outbounds" \
+              --argjson balancers "$xray_balancers" '
+            # 更新 clients
+            .inbounds[0].settings.clients = $clients |
+            
+            # 确保 routing 结构存在
+            if .routing == null then .routing = {"domainStrategy": "AsIs", "rules": []} else . end |
+            if .routing.rules == null then .routing.rules = [] else . end |
+            
+            # 确保 api 和 stats 存在（用于流量统计）
+            if .api == null then .api = {"tag": "api", "services": ["StatsService"]} else . end |
+            if .stats == null then .stats = {} else . end |
+            if .policy == null then .policy = {"system": {"statsInboundUplink": true, "statsInboundDownlink": true}, "levels": {"0": {"statsUserUplink": true, "statsUserDownlink": true}}} else . end |
+            if .policy.system == null then .policy.system = {"statsInboundUplink": true, "statsInboundDownlink": true} else . end |
+            if .policy.levels == null then .policy.levels = {"0": {"statsUserUplink": true, "statsUserDownlink": true}} else . end |
+            if .policy.levels["0"] == null then .policy.levels["0"] = {"statsUserUplink": true, "statsUserDownlink": true} else . end |
+            .policy.system.statsInboundUplink = true |
+            .policy.system.statsInboundDownlink = true |
+            .policy.levels["0"].statsUserUplink = true |
+            .policy.levels["0"].statsUserDownlink = true |
+            
+            # 确保有 API inbound（监听 127.0.0.1:10085）
+            if ([.inbounds[] | select(.tag == "api")] | length) == 0 then
+                .inbounds += [{"tag": "api", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}}]
+            else . end |
+            
+            # 确保有 API outbound
+            if ([.outbounds[] | select(.tag == "api")] | length) == 0 then
+                .outbounds += [{"tag": "api", "protocol": "blackhole", "settings": {}}]
+            else . end |
+            
+            # 添加链式代理 outbounds（先移除旧的 proxy-* outbounds）
+            .outbounds = ([.outbounds[] | select(.tag | startswith("proxy-") | not)] + $chain_obs) |
+            
+            # 添加/更新负载均衡器
+            if ($balancers | length) > 0 then
+                .routing.balancers = $balancers
+            else . end |
+            
+            # 确保 routing 中有 API 规则
+            if ([.routing.rules[]? | select(.inboundTag != null and (.inboundTag | contains(["api"])))] | length) == 0 then
+                .routing.rules = [{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}] + (.routing.rules // [])
+            else . end |
+            
+            # 更新用户级路由规则
+            # 移除旧的用户级规则（只保留没有 user 字段或 user 不是数组的规则），然后添加新规则
+            .routing.rules = ([.routing.rules[]? | select(
+                (.user == null or (.user | type) != "array")
+            )] + $user_rules)
         ' "$config_file" > "$tmp" 2>/dev/null; then
             mv "$tmp" "$config_file"
         else
             rm -f "$tmp"
+            # 如果完整更新失败，至少尝试更新 clients
+            tmp=$(mktemp)
+            if jq --argjson clients "$users_json" '.inbounds[0].settings.clients = $clients' "$config_file" > "$tmp" 2>/dev/null; then
+                mv "$tmp" "$config_file"
+            else
+                rm -f "$tmp"
+            fi
         fi
     fi
     
     _info "用户信息已保存到数据库"
     
     # 重载服务使配置生效
-    if systemctl is-active --quiet "$service_name" 2>/dev/null; then
+    if [[ "$DISTRO" == "alpine" ]]; then
+        rc-service "$service_name" restart 2>/dev/null || true
+    elif systemctl is-active --quiet "$service_name" 2>/dev/null; then
         systemctl reload "$service_name" 2>/dev/null || systemctl restart "$service_name" 2>/dev/null
     fi
 }
@@ -21313,7 +22509,7 @@ _sync_traffic_now() {
             [[ -z "$users" ]] && continue
             
             echo -e "  ${C}$proto_name${NC}"
-            while IFS='|' read -r name uuid used quota enabled port; do
+            while IFS='|' read -r name uuid used quota enabled port routing; do
                 [[ -z "$name" ]] && continue
                 local used_fmt=$(format_bytes "$used")
                 local quota_fmt="无限制"
@@ -21445,6 +22641,7 @@ manage_users() {
         _item "4" "设置用户配额"
         _item "5" "重置用户流量"
         _item "6" "启用/禁用用户"
+        _item "r" "修改用户路由"
         _item "s" "查看用户分享链接"
         _line
         _item "7" "实时流量统计"
@@ -21490,6 +22687,12 @@ manage_users() {
             6)
                 if _select_protocol_for_users; then
                     _toggle_user "$SELECTED_CORE" "$SELECTED_PROTO"
+                    _pause
+                fi
+                ;;
+            r|R)
+                if _select_protocol_for_users; then
+                    _set_user_routing "$SELECTED_CORE" "$SELECTED_PROTO"
                     _pause
                 fi
                 ;;

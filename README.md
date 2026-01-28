@@ -50,6 +50,7 @@
 |------|:------:|:--------:|:--------:|:--------:|:------:|
 | VLESS + Reality | ❌ | ❌ | ❌ | 可选 | TCP |
 | VLESS + XHTTP | ❌ | ✅ | ❌ | 可选 | HTTP/2 |
+| VLESS + XHTTP + CDN | ✅ | ✅ | ❌ | ✅ | HTTP/2 |
 | VLESS + WS | ✅ | ❌ | ✅ | ✅ | WebSocket |
 | VMess + WS | ✅ | ❌ | ✅ | ✅ | WebSocket |
 | VLESS-Vision | ❌ | ❌ | ✅(主) | ✅ | XTLS |
@@ -76,6 +77,7 @@
 
 **高性能传输：**
 - **VLESS + XHTTP** - HTTP/2 多路复用，高并发场景性能优异
+- **VLESS + XHTTP + CDN** - 🆕 支持 CDN 代理，IP被墙也能用
 - **Hysteria2** - QUIC 协议，UDP 加速，游戏/视频体验好
 - **TUIC v5** - QUIC 协议，低延迟
 
@@ -125,7 +127,7 @@ Linux 客户端脚本已移至 [Releases](https://github.com/Chil30/vless-all-in
 | **直连** | 使用本机 IP 出口 | 服务器本机已解锁的流媒体 |
 | **WARP** | Cloudflare 免费出口 | 免费解锁 |
 | **链式代理** | 导入已解锁的节点 | 用自己的解锁机落地 |
-| **双层链式** | WARP → 落地节点 | 🆕 隐藏真实 IP + 解锁 |
+| **双层链式** | WARP → 落地节点 | 隐藏真实 IP + 解锁 |
 
 ### 预设规则
 
@@ -133,7 +135,7 @@ Linux 客户端脚本已移至 [Releases](https://github.com/Chil30/vless-all-in
 
 > 📖 详细使用方法请参阅 [USE_GUIDE.md](USE_GUIDE.md#分流功能)
 
-### 🆕 多IP入出站配置
+###  多IP入出站配置
 
 多IP VPS 用户可以配置入站IP到出站IP的映射规则：
 
@@ -163,6 +165,9 @@ vless → 8) 分流管理 → 2) 链式代理 → 5) 多IP入出站配置
 | 启用/禁用 | 临时禁用用户而不删除 |
 | 分享链接 | 查看每个用户的专属链接/二维码 |
 | TG 通知 | 流量超限自动 Telegram 通知 |
+| 用户级路由 | 同端口不同用户配置不同落地节点 |
+
+> 💡 **用户级路由**：每个用户可独立配置出站路由（直连/WARP/链式代理/负载均衡），优先于全局分流规则。
 
 ```bash
 vless → 4) 用户管理
@@ -333,9 +338,17 @@ vless → 9) CF Tunnel(Argo)
 | **快速隧道** | trycloudflare.com 临时域名 | 测试、临时使用 |
 | **命名隧道** | 自定义域名 | 生产环境 |
 
-**支持的协议**：VLESS-WS、VMess-WS (WebSocket 协议)
+### 支持的协议
 
-> 📖 详细使用方法请参阅 [USE_GUIDE.md](USE_GUIDE.md#cloudflare-tunnel)
+| 协议 | 说明 | 推荐 |
+|------|------|:----:|
+| **VLESS-WS (无TLS)** | 由 CF Tunnel 提供 TLS | ⭐ |
+| **VLESS-WS** | 需要域名证书 | |
+| **VMess-WS** | 需要域名证书 | |
+
+> 💡 **推荐使用 VLESS-WS（无TLS）**：安装时选择「VLESS-WS-CF (无TLS)」，无需申请证书，CF Tunnel 自动提供 TLS 加密。
+
+> 📖 详细使用方法请参阅 [USE_GUIDE.md](USE_GUIDE.md#cf-tunnelargo)
 
 ---
 
@@ -390,6 +403,21 @@ vless → 9) CF Tunnel(Argo)
 | **iOS** | [Loon](https://apps.apple.com/app/loon/id1373567447) | ✅ V2Ray 订阅 |
 | **Android** | [Clash Meta](https://github.com/MetaCubeX/ClashMetaForAndroid) | ✅ Clash 订阅 |
 | **Android** | [V2rayNG](https://github.com/2dust/v2rayNG) | ✅ V2Ray 订阅 |
+
+### XHTTP 协议客户端支持
+
+> ⚠️ **注意**: XHTTP 是较新的协议，客户端支持有限
+
+| 平台 | 客户端 | XHTTP 支持 |
+|------|--------|:---------:|
+| Android | V2rayNG 1.8.31+ | ✅ |
+| Android | NekoBox | ✅ |
+| iOS | Streisand | ✅ |
+| iOS | Shadowrocket | ❌ |
+| iOS | Quantumult X | ❌ |
+| Windows | V2rayN (Xray核心) | ✅ |
+
+> 💡 iOS 用户如需 CDN 支持，建议改用 **VLESS+WS+TLS** 协议，兼容性更好。
 
 ---
 
@@ -512,16 +540,20 @@ apk add curl jq unzip iproute2 nginx
 - 🖥️ 通过下方推荐链接 **购买服务器**，你获得优惠我获得返佣。
 - 💬 加入 [Telegram 群组](https://t.me/vless_vaio) 交流反馈
 
-### 🎁 服务器推荐
+### 购买服务器
 
 | 服务商 | 特点 | 链接 |
 |--------|------|------|
 | **VIP Cloud** | 原生IP / 解锁流媒体 / CN2GIA | [购买](https://www.vipcloud.cc/aff/QXUUKZSH) |
 | **Aether Cloud** | 原生IP / IPv6家宽 / 高性价比 | [购买](https://billing.aethercloud.io?ref=Ers87GElwp) |
-| **AkileCloud** | 多地区 / SOCKS5落地 / 家宽IP | [购买](https://akile.io/register?aff_code=b349580b-113a-4b42-ab76-c2db81c5c22d) |
+| **AkileCloud** | 多地区 / SOCKS5落地 / 家宽 IP | [购买](https://akile.io/register?aff_code=b349580b-113a-4b42-ab76-c2db81c5c22d) |
 | **YT.NET** | 原生IP / 深港节点 / BGP国际网络 | [购买](https://cloud.yt.net/?ref=13192) |
----
 
+### 🎁 RoxyBrowser 指纹浏览器 - 专属链接注册享 10% 优惠，👆 点击图片注册
+
+<a href="https://roxybrowser.com?code=0128SUFA" target="_blank"> <img src="https://roxybrowser.com/banner_picture_new/link_c/zh/728_90_1x.png" alt="https://roxybrowser.com?code=0128SUFA" srcset="https://roxybrowser.com/banner_picture_new/link_c/zh/728_90_1x.png 1x, https://roxybrowser.com/banner_picture_new/link_c/zh/728_90_2x.png 2x"> </a>
+
+---
 ## 🙏 致谢
 
 ### 灵感来源
@@ -553,4 +585,3 @@ MIT License
 ## 📈 Star 历史
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Chil30/vless-all-in-one&type=Date)](https://star-history.com/#Chil30/vless-all-in-one&Date)
-
