@@ -1,6 +1,6 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-#  多协议代理一键部署脚本 v3.4.2 [服务端]
+#  多协议代理一键部署脚本 v3.4.3 [服务端]
 #  
 #  架构升级:
 #    • Xray 核心: 处理 TCP/TLS 协议 (VLESS/VMess/Trojan/SOCKS/SS2022)
@@ -17,7 +17,7 @@
 #  项目地址: https://github.com/Chil30/vless-all-in-one
 #═══════════════════════════════════════════════════════════════════════════════
 
-readonly VERSION="3.4.2"
+readonly VERSION="3.4.3"
 readonly AUTHOR="Chil30"
 readonly REPO_URL="https://github.com/Chil30/vless-all-in-one"
 readonly SCRIPT_REPO="Chil30/vless-all-in-one"
@@ -4552,42 +4552,78 @@ EOF
     
 }
 
+# 全局 SNI 域名列表（常见企业子域名，用于 Reality 伪装）
+readonly COMMON_SNI_LIST=(
+    # 微软子域名（企业/开发者常用）
+    "learn.microsoft.com"
+    "azure.microsoft.com"
+    "docs.microsoft.com"
+    "developer.microsoft.com"
+    "visualstudio.microsoft.com"
+    "technet.microsoft.com"
+    "msdn.microsoft.com"
+    # 苹果子域名
+    "support.apple.com"
+    "developer.apple.com"
+    "itunes.apple.com"
+    "store.apple.com"
+    # 云服务子域名
+    "aws.amazon.com"
+    "console.aws.amazon.com"
+    "developer.amazon.com"
+    # 企业软件子域名
+    "docs.oracle.com"
+    "cloud.oracle.com"
+    "developer.cisco.com"
+    "helpx.adobe.com"
+    "docs.vmware.com"
+    "help.sap.com"
+    "developer.ibm.com"
+    "cloud.ibm.com"
+    # 硬件厂商子域名
+    "developer.nvidia.com"
+    "developer.amd.com"
+    "software.intel.com"
+    "developer.samsung.com"
+    "support.dell.com"
+    "support.hp.com"
+    "developers.hp.com"
+    "support.lenovo.com"
+    "download.lenovo.com"
+    # CDN 和云服务
+    "developers.cloudflare.com"
+    "dash.cloudflare.com"
+    "developer.akamai.com"
+    "docs.fastly.com"
+    # 开发者平台
+    "meta.stackoverflow.com"
+    "api.stackexchange.com"
+    "old.reddit.com"
+    "api.reddit.com"
+    "en.wikipedia.org"
+    "meta.wikimedia.org"
+    # 游戏平台
+    "store.steampowered.com"
+    "help.steampowered.com"
+    "store.epicgames.com"
+    "help.ea.com"
+    "store.ubi.com"
+    # 其他知名企业
+    "store.sony.com"
+    "support.sony.com"
+    "business.panasonic.com"
+    "business.lg.com"
+    "support.lg.com"
+    "support.philips.com"
+    "support.siemens.com"
+    "docs.bosch.com"
+)
+
 gen_sni() { 
-    # 稳定的 SNI 列表（使用子域名，更安全不易被检测）
-    local s=(
-        # 微软子域名（企业/开发者常用）
-        "learn.microsoft.com"
-        "azure.microsoft.com"
-        "docs.microsoft.com"
-        "developer.microsoft.com"
-        "visualstudio.microsoft.com"
-        # 苹果子域名
-        "support.apple.com"
-        "developer.apple.com"
-        "itunes.apple.com"
-        # 云服务子域名
-        "aws.amazon.com"
-        "console.aws.amazon.com"
-        "cloud.google.com"
-        "console.cloud.google.com"
-        # 企业软件子域名
-        "docs.oracle.com"
-        "cloud.oracle.com"
-        "developer.cisco.com"
-        "helpx.adobe.com"
-        "docs.vmware.com"
-        "help.sap.com"
-        # 硬件厂商子域名
-        "developer.nvidia.com"
-        "developer.amd.com"
-        "software.intel.com"
-        "developer.samsung.com"
-        "support.dell.com"
-    )
-    # 使用 /dev/urandom 生成更好的随机数
+    # 从全局列表中随机选择一个 SNI
     local idx=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d ' ')
     [[ -z "$idx" ]] && idx=$RANDOM
-    echo "${s[$((idx % ${#s[@]}))]}"
+    echo "${COMMON_SNI_LIST[$((idx % ${#COMMON_SNI_LIST[@]}))]}"
 }
 
 gen_xhttp_path() {
@@ -5445,8 +5481,9 @@ setup_cert_and_nginx() {
                     read -rp "  请选择 [1]: " reality_cert_choice
                     
                     if [[ "$reality_cert_choice" == "2" ]]; then
-                        # 用户选择无域名模式，清除证书域名变量
+                        # 用户选择无域名模式，清除证书域名变量和旧证书
                         CERT_DOMAIN=""
+                        rm -f "$CFG/certs/server.crt" "$CFG/certs/server.key" "$CFG/cert_domain"
                         _info "将使用随机 SNI (无域名模式)"
                         return 0
                     fi
@@ -8719,15 +8756,23 @@ gen_tuic_server_config() {
     [[ -z "$server_ip" ]] && server_ip=$(get_ipv6)
     [[ -z "$server_ip" ]] && server_ip="$sni"
     
-    # 检查是否有真实域名的 ACME 证书可复用
-    local common_snis="www.microsoft.com learn.microsoft.com azure.microsoft.com www.apple.com www.amazon.com aws.amazon.com www.icloud.com itunes.apple.com www.nvidia.com www.amd.com www.intel.com www.samsung.com www.dell.com www.cisco.com www.oracle.com www.ibm.com www.adobe.com www.autodesk.com www.sap.com www.vmware.com"
+    # TUIC 需要证书：检查 SNI 是否为用户自己的域名
+    # - 如果是用户域名（不在常见 SNI 列表）→ 尝试复用已有真实证书
+    # - 如果是常见域名（如 microsoft.com）→ 后续生成自签证书
+    local is_common_sni=false
+    for common_sni in "${COMMON_SNI_LIST[@]}"; do
+        if [[ "$sni" == "$common_sni" ]]; then
+            is_common_sni=true
+            break
+        fi
+    done
     
-    if ! echo "$common_snis" | grep -qw "$sni"; then
-        # 真实域名：检查是否有共享证书
+    if [[ "$is_common_sni" == "false" ]]; then
+        # 用户自己的域名：检查是否有真实证书可复用
         if [[ -f "$CFG/certs/server.crt" && -f "$CFG/certs/server.key" ]]; then
             local cert_cn=$(openssl x509 -in "$CFG/certs/server.crt" -noout -subject 2>/dev/null | sed 's/.*CN *= *//')
             if [[ "$cert_cn" == "$sni" ]]; then
-                _ok "复用现有证书 (域名: $sni)"
+                _ok "复用现有真实证书 (域名: $sni)"
             fi
         fi
     fi
@@ -16661,14 +16706,14 @@ do_uninstall() {
     echo ""
     echo -e "  ${Y}已保留的内容:${NC}"
     echo -e "  • 软件包: xray, sing-box, snell-server"
-    echo -e "  • 软件包: anytls-server, shadow-tls"
+    echo -e "  • 软件包: anytls-server, shadow-tls, caddy"
     echo -e "  • ${G}域名证书: 下次安装将自动复用，无需重新申请${NC}"
     echo ""
     echo -e "  ${C}如需完全删除软件包，请执行:${NC}"
-    echo -e "  ${G}rm -f /usr/local/bin/{xray,sing-box,snell-server*,anytls-*,shadow-tls}${NC}"
+    echo -e "  ${G}rm -f /usr/local/bin/{xray,sing-box,snell-server*,anytls-*,shadow-tls,caddy}${NC}"
     echo ""
     echo -e "  ${C}如需删除证书，请执行:${NC}"
-    echo -e "  ${G}rm -rf /etc/vless-reality/certs /etc/vless-reality/cert_domain${NC}"
+    echo -e "  ${G}rm -rf $CFG/certs $CFG/cert_domain${NC}"
 }
 
 #═══════════════════════════════════════════════════════════════════════════════
@@ -16977,6 +17022,11 @@ do_install_server() {
             
             # 询问SNI配置
             local final_sni=$(ask_sni_config "$(gen_sni)" "$cert_domain")
+            
+            # 如果没有真实域名，用选择的 SNI 重新生成自签证书
+            if [[ -z "$cert_domain" ]]; then
+                gen_self_cert "$final_sni"
+            fi
             
             echo ""
             _line
@@ -19892,9 +19942,22 @@ manage_subscription() {
                 3) manage_external_nodes ;;
                 4) setup_subscription_interactive ;;
                 5) 
+                    # 获取域名信息
+                    local sub_domain=""
+                    if [[ -f "$CFG/sub.info" ]]; then
+                        sub_domain=$(grep "^sub_domain=" "$CFG/sub.info" 2>/dev/null | cut -d'=' -f2)
+                    fi
+                    
                     rm -f /etc/nginx/conf.d/vless-sub.conf "$CFG/sub.info"
                     rm -rf "$CFG/subscription"
                     nginx -s reload 2>/dev/null
+                    
+                    # 清理 hosts 记录
+                    if [[ -n "$sub_domain" ]]; then
+                        sed -i "/127.0.0.1 $sub_domain/d" /etc/hosts 2>/dev/null
+                        _info "已清理 /etc/hosts 中的域名记录"
+                    fi
+                    
                     _ok "订阅服务已停用"
                     _pause
                     ;;
@@ -20114,6 +20177,14 @@ sub_port=$sub_port
 sub_domain=$sub_domain
 sub_https=$use_https
 EOF
+    
+    # 添加域名到 hosts（解决部分 VPS 环境下的本地回环问题）
+    if [[ -n "$sub_domain" ]]; then
+        if ! grep -q "127.0.0.1 $sub_domain" /etc/hosts 2>/dev/null; then
+            echo "127.0.0.1 $sub_domain" >> /etc/hosts
+            _info "已添加域名到 /etc/hosts（优化本地访问）"
+        fi
+    fi
     
     # 测试并重载 Nginx
     if nginx -t 2>/dev/null; then
@@ -22616,7 +22687,7 @@ _show_realtime_traffic() {
     _dline
     
     # 检查 Xray 是否运行
-    if ! pgrep -x xray &>/dev/null; then
+    if ! _pgrep xray &>/dev/null; then
         _err "Xray 未运行，无法获取流量统计"
         return
     fi
