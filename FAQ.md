@@ -624,6 +624,36 @@ grpcurl -plaintext 127.0.0.1:10085 xray.app.stats.command.StatsService/QueryStat
 cat /etc/vless-reality/db.json | jq '.users[] | {name: .name, upload: .upload, download: .download}'
 ```
 
+### 12.4 用户到期日期排查
+
+```bash
+# 查看用户到期日期
+cat /etc/vless-reality/db.json | jq '.. | .users? // empty | .[] | select(.expire_date) | {name, expire_date}'
+
+# 手动检查过期用户
+./vless-server.sh --check-expire
+
+# 手动检查并发送 TG 通知
+./vless-server.sh --check-expire --notify
+
+# 安装每日自动检查 (每天 3:00)
+./vless-server.sh --setup-expire-cron
+
+# 查看过期检查日志
+cat /etc/vless-reality/expire.log
+
+# 查看过期检查 cron
+crontab -l | grep check-expire
+```
+
+**正常输出示例：**
+```
+检查用户到期状态...
+  即将过期提醒: 1 条
+  禁用过期用户: 0 个
+完成。日志: /etc/vless-reality/expire.log
+```
+
 ---
 
 ## 13. 日志查看

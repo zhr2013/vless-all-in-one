@@ -691,10 +691,10 @@ gen_xray_socks_accounts() {
 # enabled: 是否启用
 
 # 添加用户到协议 (支持多端口数组格式)
-# 用法: db_add_user "xray" "vless" "用户名" "uuid" [配额GB]
+# 用法: db_add_user "xray" "vless" "用户名" "uuid" [配额GB] [到期日期YYYY-MM-DD]
 # 多端口时：用户会添加到第一个端口实例的 users 数组（共享凭证）
 db_add_user() {
-    local core="$1" proto="$2" name="$3" uuid="$4" quota_gb="${5:-0}"
+    local core="$1" proto="$2" name="$3" uuid="$4" quota_gb="${5:-0}" expire_date="${6:-}"
     [[ ! -f "$DB_FILE" ]] && return 1
     
     # 检查协议是否存在
@@ -734,19 +734,22 @@ db_add_user() {
     
     local created=$(date '+%Y-%m-%d')
     
-    # 添加用户 (支持多端口数组)
+    # 添加用户 (支持多端口数组，包含 expire_date)
     local tmp_file="${DB_FILE}.tmp"
     jq --arg c "$core" --arg p "$proto" --arg n "$name" --arg u "$uuid" \
-       --argjson q "$quota" --arg cr "$created" '
+       --argjson q "$quota" --arg cr "$created" --arg exp "$expire_date" '
         .[$c][$p] as $cfg |
         if ($cfg | type) == "array" then
             # 多端口: 添加到第一个端口实例
-            .[$c][$p][0].users = ((.[$c][$p][0].users // []) + [{name:$n,uuid:$u,quota:$q,used:0,enabled:true,created:$cr}])
+            .[$c][$p][0].users = ((.[$c][$p][0].users // []) + [{name:$n,uuid:$u,quota:$q,used:0,enabled:true,created:$cr,expire_date:$exp}])
         else
             # 单端口: 正常添加
-            .[$c][$p].users = ((.[$c][$p].users // []) + [{name:$n,uuid:$u,quota:$q,used:0,enabled:true,created:$cr}])
+            .[$c][$p].users = ((.[$c][$p].users // []) + [{name:$n,uuid:$u,quota:$q,used:0,enabled:true,created:$cr,expire_date:$exp}])
         end
     ' "$DB_FILE" > "$tmp_file" && mv "$tmp_file" "$DB_FILE"
+    
+    # 如果设置了到期日期，自动安装过期检查 cron
+    [[ -n "$expire_date" ]] && ensure_expire_check_cron 2>/dev/null
     
     # 自动重建配置
     if [[ "$core" == "xray" ]]; then
@@ -755,6 +758,7 @@ db_add_user() {
         rebuild_and_reload_singbox "silent"
     fi
 }
+
 
 # 删除用户 (支持多端口数组格式)
 # 用法: db_del_user "xray" "vless" "用户名"
@@ -1107,9 +1111,308 @@ _format_user_routing() {
     esac
 }
 
+#═══════════════════════════════════════════════════════════════════════════════
+#  用户到期日期管理函数
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 设置用户到期日期 (支持多端口数组格式)
+# 用法: db_set_user_expire_date "xray" "vless" "用户名" "2026-02-28"
+# 空字符串或 "never" 表示永不过期
+db_set_user_expire_date() {
+    local core="$1" proto="$2" name="$3" expire_date="$4"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    # 处理特殊值
+    [[ "$expire_date" == "never" ]] && expire_date=""
+    
+    local tmp_file="${DB_FILE}.tmp"
+    jq --arg c "$core" --arg p "$proto" --arg n "$name" --arg e "$expire_date" '
+        .[$c][$p] as $cfg |
+        if ($cfg | type) == "array" then
+            .[$c][$p] = [$cfg[] | .users = ([.users // [] | .[] | if .name == $n then .expire_date = $e else . end])]
+        else
+            .[$c][$p].users = [.[$c][$p].users // [] | .[] | if .name == $n then .expire_date = $e else . end]
+        end
+    ' "$DB_FILE" > "$tmp_file" && mv "$tmp_file" "$DB_FILE"
+    
+    # 如果设置了到期日期，自动安装过期检查 cron
+    [[ -n "$expire_date" ]] && ensure_expire_check_cron 2>/dev/null
+}
+
+# 获取用户到期日期
+# 用法: db_get_user_expire_date "xray" "vless" "用户名"
+# 返回: YYYY-MM-DD 格式的日期，空表示永不过期
+db_get_user_expire_date() {
+    local core="$1" proto="$2" name="$3"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    jq -r --arg c "$core" --arg p "$proto" --arg n "$name" '
+        .[$c][$p] as $cfg |
+        if $cfg == null then ""
+        elif ($cfg | type) == "array" then
+            [$cfg[].users // [] | .[] | select(.name == $n)] | .[0].expire_date // ""
+        else
+            ($cfg.users // [] | map(select(.name == $n)) | .[0].expire_date) // ""
+        end
+    ' "$DB_FILE" 2>/dev/null
+}
+
+# 检查用户是否已过期
+# 用法: db_is_user_expired "xray" "vless" "用户名"
+# 返回: 0=已过期, 1=未过期或永不过期
+db_is_user_expired() {
+    local core="$1" proto="$2" name="$3"
+    local expire_date=$(db_get_user_expire_date "$core" "$proto" "$name")
+    
+    # 空日期表示永不过期
+    [[ -z "$expire_date" ]] && return 1
+    
+    # 比较日期 (YYYY-MM-DD 格式可直接字符串比较)
+    local today=$(date '+%Y-%m-%d')
+    [[ "$today" > "$expire_date" ]]
+}
+
+# 获取用户剩余天数
+# 用法: db_get_user_days_left "xray" "vless" "用户名"
+# 返回: 剩余天数 (负数表示已过期，空表示永不过期)
+db_get_user_days_left() {
+    local core="$1" proto="$2" name="$3"
+    local expire_date=$(db_get_user_expire_date "$core" "$proto" "$name")
+    
+    [[ -z "$expire_date" ]] && echo "" && return
+    
+    local today_sec=$(date -d "$(date '+%Y-%m-%d')" '+%s' 2>/dev/null || date -j -f '%Y-%m-%d' "$(date '+%Y-%m-%d')" '+%s' 2>/dev/null)
+    local expire_sec=$(date -d "$expire_date" '+%s' 2>/dev/null || date -j -f '%Y-%m-%d' "$expire_date" '+%s' 2>/dev/null)
+    
+    if [[ -n "$today_sec" && -n "$expire_sec" ]]; then
+        echo $(( (expire_sec - today_sec) / 86400 ))
+    else
+        echo ""
+    fi
+}
+
+# 获取即将过期的用户列表 (用于提醒)
+# 用法: db_get_expiring_users [天数阈值，默认3]
+# 输出: core|proto|name|expire_date|days_left (每行一个用户)
+db_get_expiring_users() {
+    local threshold="${1:-3}"
+    local today=$(date '+%Y-%m-%d')
+    
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    # 遍历所有协议的所有用户
+    for core in xray singbox; do
+        local protocols=$(db_list_protocols "$core" 2>/dev/null)
+        [[ -z "$protocols" ]] && continue
+        
+        while read -r proto; do
+            [[ -z "$proto" ]] && continue
+            local users=$(db_list_users "$core" "$proto" 2>/dev/null)
+            [[ -z "$users" ]] && continue
+            
+            while read -r name; do
+                [[ -z "$name" || "$name" == "default" ]] && continue
+                local days_left=$(db_get_user_days_left "$core" "$proto" "$name")
+                [[ -z "$days_left" ]] && continue
+                
+                # 检查是否在阈值范围内 (0 <= days_left <= threshold)
+                if [[ "$days_left" -ge 0 && "$days_left" -le "$threshold" ]]; then
+                    local expire_date=$(db_get_user_expire_date "$core" "$proto" "$name")
+                    echo "${core}|${proto}|${name}|${expire_date}|${days_left}"
+                fi
+            done <<< "$users"
+        done <<< "$protocols"
+    done
+}
+
+# 获取所有已过期的用户列表
+# 用法: db_get_expired_users
+# 输出: core|proto|name|expire_date|days_left (每行一个用户)
+db_get_expired_users() {
+    local today=$(date '+%Y-%m-%d')
+    
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    for core in xray singbox; do
+        local protocols=$(db_list_protocols "$core" 2>/dev/null)
+        [[ -z "$protocols" ]] && continue
+        
+        while read -r proto; do
+            [[ -z "$proto" ]] && continue
+            local users=$(db_list_users "$core" "$proto" 2>/dev/null)
+            [[ -z "$users" ]] && continue
+            
+            while read -r name; do
+                [[ -z "$name" || "$name" == "default" ]] && continue
+                local days_left=$(db_get_user_days_left "$core" "$proto" "$name")
+                [[ -z "$days_left" ]] && continue
+                
+                # 已过期: days_left < 0
+                if [[ "$days_left" -lt 0 ]]; then
+                    local expire_date=$(db_get_user_expire_date "$core" "$proto" "$name")
+                    local enabled=$(db_get_user_field "$core" "$proto" "$name" "enabled")
+                    # 只返回仍然启用的过期用户（需要禁用）
+                    [[ "$enabled" == "true" ]] && echo "${core}|${proto}|${name}|${expire_date}|${days_left}"
+                fi
+            done <<< "$users"
+        done <<< "$protocols"
+    done
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+#  Telegram 通知功能
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 获取 Telegram 配置
+db_get_tg_config() {
+    local field="$1"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    jq -r --arg f "$field" '.telegram[$f] // ""' "$DB_FILE" 2>/dev/null
+}
+
+# 设置 Telegram 配置
+db_set_tg_config() {
+    local field="$1" value="$2"
+    [[ ! -f "$DB_FILE" ]] && init_db
+    local tmp_file="${DB_FILE}.tmp"
+    jq --arg f "$field" --arg v "$value" '.telegram[$f] = $v' "$DB_FILE" > "$tmp_file" && mv "$tmp_file" "$DB_FILE"
+}
+
+# 发送 Telegram 消息
+send_tg_message() {
+    local message="$1"
+    local bot_token=$(db_get_tg_config "bot_token")
+    local chat_id=$(db_get_tg_config "chat_id")
+    
+    [[ -z "$bot_token" || -z "$chat_id" ]] && return 1
+    
+    curl -s -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+        -d "chat_id=${chat_id}" \
+        -d "text=${message}" \
+        -d "parse_mode=Markdown" \
+        --connect-timeout 10 >/dev/null 2>&1
+}
+
+# 发送用户即将过期提醒
+send_tg_expire_warning() {
+    local name="$1" proto="$2" expire_date="$3" days_left="$4"
+    local proto_name=$(get_protocol_name "$proto")
+    local hostname=$(hostname 2>/dev/null || echo "服务器")
+    
+    local message="⚠️ *用户即将过期*
+🖥 服务器: \`$hostname\`
+👤 用户: \`$name\`
+📋 协议: $proto_name
+📅 到期: $expire_date
+⏰ 剩余: *${days_left}天*"
+    
+    send_tg_message "$message"
+}
+
+# 发送用户已过期通知
+send_tg_expired_notice() {
+    local name="$1" proto="$2" expire_date="$3"
+    local proto_name=$(get_protocol_name "$proto")
+    local hostname=$(hostname 2>/dev/null || echo "服务器")
+    
+    local message="🚫 *用户已过期禁用*
+🖥 服务器: \`$hostname\`
+👤 用户: \`$name\`
+📋 协议: $proto_name
+📅 到期: $expire_date"
+    
+    send_tg_message "$message"
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
+#  过期检查和处理
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 执行过期用户检查和禁用
+check_and_disable_expired_users() {
+    local notify="${1:-}"
+    local count=0
+    
+    local expired_users=$(db_get_expired_users)
+    [[ -z "$expired_users" ]] && echo "$count" && return 0
+    
+    while IFS='|' read -r core proto name expire_date days_left; do
+        [[ -z "$name" ]] && continue
+        db_set_user_enabled "$core" "$proto" "$name" false
+        ((count++))
+        [[ "$notify" == "--notify" ]] && send_tg_expired_notice "$name" "$proto" "$expire_date"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 禁用: $name ($proto)" >> "$CFG/expire.log"
+    done <<< "$expired_users"
+    
+    [[ $count -gt 0 ]] && rebuild_and_reload_xray "silent" 2>/dev/null
+    echo "$count"
+}
+
+# 发送即将过期提醒
+send_expire_warnings() {
+    local threshold="${1:-3}"
+    local count=0
+    
+    local expiring_users=$(db_get_expiring_users "$threshold")
+    [[ -z "$expiring_users" ]] && echo "$count" && return 0
+    
+    while IFS='|' read -r core proto name expire_date days_left; do
+        [[ -z "$name" ]] && continue
+        local last_warn=$(db_get_user_alert_state "$core" "$proto" "$name" "last_expire_warn_day")
+        [[ "$last_warn" == "$days_left" ]] && continue
+        send_tg_expire_warning "$name" "$proto" "$expire_date" "$days_left"
+        db_set_user_alert_state "$core" "$proto" "$name" "last_expire_warn_day" "$days_left"
+        ((count++))
+    done <<< "$expiring_users"
+    
+    echo "$count"
+}
+
+# 安装过期检查 cron job (每天 3:00)
+install_expire_check_cron() {
+    local script_path="$0"
+    local cron_cmd="0 3 * * * $script_path --check-expire --notify >/dev/null 2>&1"
+    
+    if crontab -l 2>/dev/null | grep -q "check-expire"; then
+        _info "过期检查 cron 已存在"
+        return 0
+    fi
+    
+    (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
+    [[ $? -eq 0 ]] && _ok "已安装过期检查 cron (每天 3:00)" || _err "安装失败"
+}
+
+# 确保过期检查 cron 已安装（设置到期日期时自动调用）
+# 返回: 0=已存在, 1=新安装成功, 2=安装失败
+ensure_expire_check_cron() {
+    local script_path="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+    local cron_cmd="0 3 * * * $script_path --check-expire --notify >/dev/null 2>&1"
+    
+    # 如果已存在则跳过
+    if crontab -l 2>/dev/null | grep -q "check-expire"; then
+        echo -e "  ${D}(过期检查定时任务已启用)${NC}"
+        return 0
+    fi
+    
+    # 尝试安装
+    if (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab - 2>/dev/null; then
+        echo -e "  ${G}✓ 已自动安装过期检查定时任务 (每天 3:00)${NC}"
+        return 1
+    else
+        echo -e "  ${Y}提示: 过期检查定时任务未安装，可运行: ./vless-server.sh --setup-expire-cron${NC}"
+        return 2
+    fi
+}
+
+# 卸载过期检查 cron
+uninstall_expire_check_cron() {
+    crontab -l 2>/dev/null | grep -v "check-expire" | crontab -
+    _ok "已移除过期检查 cron"
+}
+
 # 获取所有用户的流量统计 (用于显示，支持多端口数组格式)
 # 用法: db_get_users_stats "xray" "vless"
-# 输出: name|uuid|used|quota|enabled|port|routing (每行一个用户)
+# 输出: name|uuid|used|quota|enabled|port|routing|expire_date (每行一个用户)
 # 多端口时合并所有端口的用户，无 users 的端口输出默认用户
 db_get_users_stats() {
     local core="$1" proto="$2"
@@ -1123,25 +1426,26 @@ db_get_users_stats() {
             # 多端口数组
             $cfg[] | . as $port_cfg |
             if (.users | length) > 0 then
-                .users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($port_cfg.port)|\(.routing // "")"
+                .users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($port_cfg.port)|\(.routing // "")|\(.expire_date // "")"
             elif (.uuid != null or .password != null or .username != null) then
                 # 无 users 数组，生成默认用户（与 Xray email 格式一致使用 "default"）
-                "default|\(.uuid // .password // .username)|0|0|true|\(.port)|"
+                "default|\(.uuid // .password // .username)|0|0|true|\(.port)||"
             else
                 empty
             end
         else
             # 单端口对象
             if ($cfg.users | length) > 0 then
-                $cfg.users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($cfg.port)|\(.routing // "")"
+                $cfg.users[] | "\(.name)|\(.uuid)|\(.used // 0)|\(.quota // 0)|\(.enabled // true)|\($cfg.port)|\(.routing // "")|\(.expire_date // "")"
             elif ($cfg.uuid != null or $cfg.password != null or $cfg.username != null) then
-                "default|\($cfg.uuid // $cfg.password // $cfg.username)|0|0|true|\($cfg.port)|"
+                "default|\($cfg.uuid // $cfg.password // $cfg.username)|0|0|true|\($cfg.port)||"
             else
                 empty
             end
         end
     ' "$DB_FILE" 2>/dev/null
 }
+
 
 # 格式化流量显示
 # 用法: format_bytes 1073741824  -> "1.00 GB"
@@ -22521,11 +22825,11 @@ _show_users_list() {
         return
     fi
     
-    printf "  ${W}%-10s %-9s %-10s %-8s %-4s %-10s${NC}\n" "用户名" "已用" "配额" "使用率" "状态" "路由"
+    printf "  ${W}%-10s %-9s %-9s %-7s %-4s %-10s${NC}\n" "用户名" "已用" "配额" "使用率" "状态" "到期"
     _line
     
     local user_list=()
-    while IFS='|' read -r name uuid used quota enabled port routing; do
+    while IFS='|' read -r name uuid used quota enabled port routing expire_date; do
         [[ -z "$name" ]] && continue
         user_list+=("$name")
         
@@ -22533,14 +22837,12 @@ _show_users_list() {
         local quota_fmt="无限"
         local percent="-"
         local status_icon="${G}●${NC}"
-        local routing_fmt=$(_format_user_routing "$routing")
+        local expire_fmt="永久"
         
         if [[ "$quota" -gt 0 ]]; then
             quota_fmt=$(format_bytes "$quota")
-            # BusyBox awk 兼容写法：使用 -v 参数传递变量
             percent=$(awk -v u="$used" -v q="$quota" 'BEGIN {printf "%.0f%%", (u/q)*100}')
             
-            # 颜色标记
             local pct_num=$(awk -v u="$used" -v q="$quota" 'BEGIN {printf "%.0f", (u/q)*100}')
             if [[ "$pct_num" -ge 100 ]]; then
                 percent="${R}${percent}${NC}"
@@ -22549,9 +22851,28 @@ _show_users_list() {
             fi
         fi
         
+        # 到期日期处理
+        if [[ -n "$expire_date" ]]; then
+            local days_left=$(db_get_user_days_left "$core" "$proto" "$name")
+            if [[ -n "$days_left" ]]; then
+                if [[ "$days_left" -lt 0 ]]; then
+                    expire_fmt="${R}已过期${NC}"
+                    status_icon="${R}○${NC}"
+                elif [[ "$days_left" -eq 0 ]]; then
+                    expire_fmt="${R}今天${NC}"
+                    status_icon="${R}●${NC}"
+                elif [[ "$days_left" -le 3 ]]; then
+                    expire_fmt="${Y}${days_left}天${NC}"
+                    status_icon="${Y}●${NC}"
+                else
+                    expire_fmt="${days_left}天"
+                fi
+            fi
+        fi
+        
         [[ "$enabled" != "true" ]] && status_icon="${R}○${NC}"
         
-        printf "  %-10s %-9s %-10s %-8s %b  %-10s\n" "$name" "$used_fmt" "$quota_fmt" "$percent" "$status_icon" "$routing_fmt"
+        printf "  %-10s %-9s %-9s %-7s %b  %b\n" "$name" "$used_fmt" "$quota_fmt" "$percent" "$status_icon" "$expire_fmt"
     done <<< "$stats"
     
     _line
@@ -22954,6 +23275,30 @@ _add_user() {
         _err "请输入有效数字"
     done
     
+    # 输入到期日期
+    echo ""
+    echo -e "  ${D}到期日期: 输入天数(如30) 或日期(如2026-03-01)，留空表示永不过期${NC}"
+    local expire_date=""
+    local expire_display="永不过期"
+    read -rp "  到期 [永不过期]: " expire_input
+    if [[ -n "$expire_input" ]]; then
+        if [[ "$expire_input" =~ ^[0-9]+$ ]]; then
+            # 输入的是天数
+            expire_date=$(date -d "+${expire_input} days" '+%Y-%m-%d' 2>/dev/null)
+            if [[ -z "$expire_date" ]]; then
+                # macOS 兼容
+                expire_date=$(date -v+${expire_input}d '+%Y-%m-%d' 2>/dev/null)
+            fi
+            expire_display="$expire_date (${expire_input}天后)"
+        elif [[ "$expire_input" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            # 输入的是日期
+            expire_date="$expire_input"
+            expire_display="$expire_date"
+        else
+            _warn "无效日期格式，将设置为永不过期"
+        fi
+    fi
+    
     # 选择路由 (可选)
     local user_routing=""
     echo ""
@@ -22971,14 +23316,15 @@ _add_user() {
     echo -e "  用户名: ${G}$name${NC}"
     echo -e "  凭证: ${G}${uuid:0:16}...${NC}"
     echo -e "  配额: ${G}${quota_gb:-无限制} GB${NC}"
+    echo -e "  到期: ${G}$expire_display${NC}"
     echo -e "  路由: ${G}$routing_display${NC}"
     _line
     
     read -rp "  确认添加? [Y/n]: " confirm
     [[ "$confirm" =~ ^[nN]$ ]] && return
     
-    # 添加到数据库
-    if db_add_user "$core" "$proto" "$name" "$uuid" "$quota_gb"; then
+    # 添加到数据库 (包含 expire_date)
+    if db_add_user "$core" "$proto" "$name" "$uuid" "$quota_gb" "$expire_date"; then
         _ok "用户 $name 添加成功"
         
         # 如果有自定义路由，设置路由
@@ -23229,6 +23575,92 @@ _toggle_user() {
                 _ok "配置已更新"
             else
                 _err "操作失败"
+            fi
+            return
+        fi
+        _err "无效选择"
+    done
+}
+
+# 设置用户到期日期
+_set_user_expire_date() {
+    local core="$1" proto="$2"
+    local proto_name=$(get_protocol_name "$proto")
+    
+    local users=$(db_list_users "$core" "$proto")
+    [[ -z "$users" ]] && { _err "没有用户"; return; }
+    
+    echo ""
+    _line
+    echo -e "  ${W}设置到期日期 - $proto_name${NC}"
+    _line
+    
+    local i=1
+    local user_array=()
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+        local expire_date=$(db_get_user_expire_date "$core" "$proto" "$user")
+        local expire_info="永久"
+        if [[ -n "$expire_date" ]]; then
+            local days_left=$(db_get_user_days_left "$core" "$proto" "$user")
+            if [[ "$days_left" -lt 0 ]]; then
+                expire_info="${R}已过期 ($expire_date)${NC}"
+            else
+                expire_info="$expire_date (剩余 ${days_left} 天)"
+            fi
+        fi
+        _item "$i" "$user ${D}($expire_info)${NC}"
+        user_array+=("$user")
+        ((i++))
+    done <<< "$users"
+    
+    _item "0" "返回"
+    _line
+    
+    local max=$((i-1))
+    while true; do
+        read -rp "  选择用户 [0-$max]: " choice
+        [[ "$choice" == "0" ]] && return
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "$max" ]]; then
+            local name="${user_array[$((choice-1))]}"
+            
+            echo ""
+            echo -e "  ${D}输入天数(如30) 或日期(2026-03-01)，输入 0 取消到期限制${NC}"
+            local expire_input
+            read -rp "  新到期: " expire_input
+            
+            local new_expire=""
+            if [[ "$expire_input" == "0" ]]; then
+                new_expire=""
+            elif [[ "$expire_input" =~ ^[0-9]+$ ]]; then
+                new_expire=$(date -d "+${expire_input} days" '+%Y-%m-%d' 2>/dev/null)
+                [[ -z "$new_expire" ]] && new_expire=$(date -v+${expire_input}d '+%Y-%m-%d' 2>/dev/null)
+            elif [[ "$expire_input" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+                new_expire="$expire_input"
+            else
+                _err "无效格式"
+                return
+            fi
+            
+            if db_set_user_expire_date "$core" "$proto" "$name" "$new_expire"; then
+                if [[ -z "$new_expire" ]]; then
+                    _ok "用户 $name 已设为永不过期"
+                else
+                    _ok "用户 $name 到期日期已设为 $new_expire"
+                fi
+                
+                # 如果用户之前被禁用且设置了有效期，询问是否启用
+                local enabled=$(db_get_user_field "$core" "$proto" "$name" "enabled")
+                if [[ "$enabled" != "true" && -n "$new_expire" ]]; then
+                    read -rp "  用户当前已禁用，是否启用? [y/N]: " enable_now
+                    if [[ "$enable_now" =~ ^[yY]$ ]]; then
+                        db_set_user_enabled "$core" "$proto" "$name" true
+                        _regenerate_config "$core" "$proto"
+                        _ok "用户已启用"
+                    fi
+                fi
+            else
+                _err "设置失败"
             fi
             return
         fi
@@ -23987,6 +24419,7 @@ manage_users() {
         _item "4" "设置用户配额"
         _item "5" "重置用户流量"
         _item "6" "启用/禁用用户"
+        _item "e" "设置到期日期"
         _item "r" "修改用户路由"
         _item "s" "查看用户分享链接"
         _line
@@ -24033,6 +24466,12 @@ manage_users() {
             6)
                 if _select_protocol_for_users; then
                     _toggle_user "$SELECTED_CORE" "$SELECTED_PROTO"
+                    _pause
+                fi
+                ;;
+            e|E)
+                if _select_protocol_for_users; then
+                    _set_user_expire_date "$SELECTED_CORE" "$SELECTED_PROTO"
                     _pause
                 fi
                 ;;
@@ -24298,13 +24737,42 @@ case "${1:-}" in
         get_all_traffic_stats
         exit 0
         ;;
+    --check-expire)
+        # 检查并禁用过期用户，发送提醒
+        init_db
+        echo "检查用户到期状态..."
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始过期检查..." >> "$CFG/expire.log"
+        # 发送即将过期提醒 (3天内)
+        warnings=$(send_expire_warnings 3)
+        echo "  发送 $warnings 条过期提醒" >> "$CFG/expire.log"
+        # 禁用过期用户
+        if [[ "${2:-}" == "--notify" ]]; then
+            disabled=$(check_and_disable_expired_users --notify)
+        else
+            disabled=$(check_and_disable_expired_users)
+        fi
+        echo "  禁用 $disabled 个过期用户" >> "$CFG/expire.log"
+        # 输出结果到终端
+        echo "  即将过期提醒: $warnings 条"
+        echo "  禁用过期用户: $disabled 个"
+        echo "完成。日志: $CFG/expire.log"
+        exit 0
+        ;;
+    --setup-expire-cron)
+        # 安装过期检查定时任务
+        init_db
+        install_expire_check_cron
+        exit 0
+        ;;
     --help|-h)
         echo "用法: $0 [选项]"
         echo ""
         echo "选项:"
-        echo "  --sync-traffic    同步流量数据到数据库 (用于定时任务)"
-        echo "  --show-traffic    显示实时流量统计"
-        echo "  --help, -h        显示帮助信息"
+        echo "  --sync-traffic       同步流量数据到数据库 (用于定时任务)"
+        echo "  --show-traffic       显示实时流量统计"
+        echo "  --check-expire       检查并禁用过期用户 (用于定时任务)"
+        echo "  --setup-expire-cron  安装过期检查定时任务"
+        echo "  --help, -h           显示帮助信息"
         echo ""
         echo "无参数时启动交互式菜单"
         exit 0

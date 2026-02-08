@@ -8,13 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.4.9] - 2026-02-08
 
 ### Added
+- 新增用户到期日期功能
+  - 添加用户时可设置到期时间（天数或日期格式）
+  - 用户列表显示剩余天数（颜色区分：红色=已过期/今天，黄色=3天内）
+  - 用户管理菜单新增「设置到期日期 (e)」选项
+  - 过期用户自动禁用（保留配置，方便续期）
+  - 支持手动执行 `--check-expire` 或安装 cron 自动检查
+  - 过期前3天 + 过期当天 TG 通知提醒
 - 新增 Clash/Clash Meta 配置输出
   - VLESS-WS、VMess-WS、Hysteria2、Trojan 协议支持 Clash YAML 格式
 - 新增 qrencode 自动安装，移除在线二维码 API 回退功能
 
 ### Fixed
 - 修复证书申请失败时自动回退到自签名证书的问题
-- 修复 VLESS-WS 协议显示名称
+  - 现在会提供选项：重试/DNS模式/自签名/取消
+- 修复 VLESS-WS 协议显示名称（改为 VLESS-WS-TLS）
+- 修复 CF Tunnel 在 Alpine/IPv6 环境下崩溃的问题（正则兼容性）
 
 ## [3.4.8] - 2026-02-06
 
