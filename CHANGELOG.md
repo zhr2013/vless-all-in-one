@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 现在会提供选项：重试/DNS模式/自签名/取消
 - 修复 VLESS-WS 协议显示名称（改为 VLESS-WS-TLS）
 - 修复 CF Tunnel 在 Alpine/IPv6 环境下崩溃的问题（正则兼容性）
-
+- 修复 SOCKS5 协议安装时重复询问用户名密码的问题
+- 修复 Snell+ShadowTLS 协议无 IPv6 出口的问题
 ## [3.4.8] - 2026-02-06
 
 ### Added
