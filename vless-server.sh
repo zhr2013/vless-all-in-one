@@ -9634,12 +9634,24 @@ gen_snell_shadowtls_server_config() {
         [[ $snell_backend_port -gt 65535 ]] && snell_backend_port=$((port - 10000))
     fi
     
+    # Snell 监听地址：ShadowTLS 模式下监听本地 127.0.0.1
+    # ShadowTLS 会转发到这个地址
+    local listen_addr="127.0.0.1"
+    
     local ipv6_line=""
-    [[ "$version" != "4" ]] && ipv6_line="ipv6 = false"
+    # Snell v4 不支持 ipv6 配置项，v5 支持
+    # 如果系统有 IPv6，启用 IPv6 支持；否则禁用
+    if [[ "$version" != "4" ]]; then
+        if _has_ipv6; then
+            ipv6_line="ipv6 = true"
+        else
+            ipv6_line="ipv6 = false"
+        fi
+    fi
 
     cat > "$CFG/$snell_conf" << EOF
 [snell-server]
-listen = 127.0.0.1:$snell_backend_port
+listen = $listen_addr:$snell_backend_port
 psk = $psk
 $ipv6_line
 obfs = off
@@ -18363,11 +18375,9 @@ do_install_server() {
             gen_vless_vision_server_config "$uuid" "$port" "$final_sni"
             ;;
         socks)
-            local username_default=$(ask_password 8 "SOCKS5用户名")
-            local password_default=$(ask_password 16 "SOCKS5密码")
-            local username="$username_default" password="$password_default"
             local use_tls="false" sni=""
             local auth_mode="password" listen_addr=""
+            local username="" password=""
 
             # 询问是否启用 TLS
             echo ""
@@ -18425,15 +18435,9 @@ do_install_server() {
                 read -rp "  请输入监听地址 [回车使用 $default_listen]: " _listen
                 listen_addr="${_listen:-$default_listen}"
             else
-                # 用户名密码模式
-                echo ""
-                _line
-                echo -e "  ${W}SOCKS5 账号设置${NC}"
-                _line
-                read -rp "  请输入用户名 [回车使用 $username_default]: " _username
-                [[ -n "$_username" ]] && username="$_username"
-                read -rp "  请输入密码 [回车使用 $password_default]: " _password
-                [[ -n "$_password" ]] && password="$_password"
+                # 用户名密码模式 - 询问用户名和密码
+                username=$(ask_password 8 "SOCKS5用户名")
+                password=$(ask_password 16 "SOCKS5密码")
             fi
 
             echo ""
